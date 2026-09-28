@@ -25,6 +25,7 @@ CONVERT_QUALITY = 92
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 STANDARD_NAME = re.compile(r"^\d{3}\.jpg$")
 DATA_LINE = re.compile(r"^var DATA=.*;$", re.MULTILINE)
+CATEGORY_PREFIX = re.compile(r"^c\d+_")
 
 
 def next_number(folder):
@@ -79,13 +80,14 @@ def main():
     data = json.loads(PHOTOS_JSON.read_text(encoding="utf-8"))
     by_slug = {c["slug"]: c for c in data}
 
-    # images/ 底下有新的分類資料夾 -> 加進清單,名稱先用資料夾名
+    # images/ 底下有新的分類資料夾(例如 c30_小熊) -> 加進清單,名稱取底線後的部分
     for folder in sorted(p for p in IMAGES.iterdir() if p.is_dir()):
         if folder.name not in by_slug:
-            cat = {"slug": folder.name, "name": folder.name, "icon": "📁", "files": []}
+            name = CATEGORY_PREFIX.sub("", folder.name) or folder.name
+            cat = {"slug": folder.name, "name": name, "icon": "📁", "files": []}
             data.append(cat)
             by_slug[folder.name] = cat
-            log(f"新分類 {folder.name}(請到 photos.json 修改 name 與 icon)")
+            log(f"新分類 {name}(圖示預設 📁,想換請到 photos.json 修改 icon)")
 
     added = removed = thumbs_made = 0
     for cat in data:
