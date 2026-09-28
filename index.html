@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>圖面整理相簿</title>
+<style>
+  :root{
+    --bg:#f7f7f5; --panel:#ffffff; --ink:#1f2328; --ink-soft:#6b7280;
+    --border:#e6e6e3; --accent:#2563eb; --accent-ink:#ffffff; --danger:#dc2626;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;}
+  .app{max-width:780px;margin:0 auto;padding:14px 14px 40px;}
+  header{padding:6px 2px 16px;}
+  header h1{font-size:1.2rem;font-weight:700;margin:0;}
+  header p{margin:4px 0 0;font-size:.8rem;color:var(--ink-soft);}
+  .cat-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;}
+  .cat-btn{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--border);
+    border-radius:14px;padding:14px 12px;cursor:pointer;text-align:left;}
+  .cat-btn[data-empty="1"]{opacity:.4;}
+  .cat-icon{width:38px;height:38px;flex:0 0 auto;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;}
+  .cat-name{font-size:.92rem;font-weight:600;}
+  .cat-count{font-size:.74rem;color:var(--ink-soft);margin-top:2px;}
+  .topbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;}
+  .back-btn{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:8px 12px;font-size:.85rem;font-weight:600;cursor:pointer;}
+  .topbar h2{flex:1;font-size:1.05rem;margin:0;}
+  .thumb-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
+  @media (min-width:520px){.thumb-grid{grid-template-columns:repeat(4,1fr);}}
+  .thumb{aspect-ratio:1/1;border-radius:10px;overflow:hidden;background:var(--panel);border:1px solid var(--border);cursor:pointer;}
+  .thumb img{width:100%;height:100%;object-fit:cover;display:block;}
+  .empty-state{text-align:center;padding:60px 20px;color:var(--ink-soft);font-size:.88rem;}
+  .viewer{position:fixed;inset:0;background:rgba(0,0,0,.94);z-index:50;display:none;flex-direction:column;}
+  .viewer.open{display:flex;}
+  .viewer-top{display:flex;justify-content:space-between;align-items:center;padding:14px;flex:0 0 auto;}
+  .viewer-top button{background:rgba(255,255,255,.12);color:#fff;border:none;border-radius:9px;padding:8px 12px;font-size:.85rem;font-weight:600;cursor:pointer;}
+  .viewer-stage{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;touch-action:none;}
+  .viewer-stage img{max-width:100%;max-height:100%;transform-origin:center center;user-select:none;}
+  .viewer-stage img.animate{transition:transform .18s ease-out;}
+  .viewer-bottom{padding:10px 14px 20px;display:flex;justify-content:center;gap:10px;flex:0 0 auto;}
+  .viewer-bottom button{background:rgba(255,255,255,.12);color:#fff;border:none;border-radius:9px;padding:9px 16px;font-size:.82rem;font-weight:600;cursor:pointer;}
+  .hint{font-size:.76rem;color:var(--ink-soft);text-align:center;margin-top:10px;line-height:1.5;}
+</style>
+</head>
+<body>
+<div class="app" id="app"></div>
+<div class="viewer" id="viewer">
+  <div class="viewer-top">
+    <button id="viewerClose">✕ 關閉</button>
+    <span id="viewerPos" style="color:#fff;font-size:.8rem;"></span>
+    <span style="width:60px"></span>
+  </div>
+  <div class="viewer-stage" id="viewerStage"><img id="viewerImg" alt=""></div>
+  <div class="viewer-bottom">
+    <button id="viewerPrev">‹ 上一張</button>
+    <button id="viewerNext">下一張 ›</button>
+  </div>
+</div>
+<script>
+var DATA=[{"slug": "c01", "name": "蛋仔", "icon": "🥚", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "007.jpg", "008.jpg", "009.jpg", "010.jpg", "011.jpg", "012.jpg"]}, {"slug": "c02", "name": "哭娃", "icon": "🧸", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "007.jpg", "008.jpg", "009.jpg", "010.jpg", "011.jpg", "012.jpg", "013.jpg", "014.jpg", "015.jpg", "016.jpg", "017.jpg", "018.jpg", "019.jpg", "020.jpg", "021.jpg", "022.jpg", "023.jpg", "024.jpg", "025.jpg", "026.jpg", "027.jpg", "028.jpg"]}, {"slug": "c03", "name": "星星人", "icon": "⭐", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "007.jpg", "008.jpg", "009.jpg", "010.jpg", "011.jpg", "012.jpg", "013.jpg", "014.jpg", "015.jpg", "016.jpg", "017.jpg", "018.jpg", "019.jpg", "020.jpg", "021.jpg", "022.jpg", "023.jpg", "024.jpg", "025.jpg", "026.jpg", "027.jpg", "028.jpg", "029.jpg", "030.jpg", "031.jpg", "032.jpg", "033.jpg", "034.jpg", "035.jpg", "036.jpg", "037.jpg", "038.jpg", "039.jpg", "040.jpg", "041.jpg", "042.jpg", "043.jpg", "044.jpg", "045.jpg", "046.jpg", "047.jpg", "048.jpg", "049.jpg", "050.jpg", "051.jpg", "052.jpg", "053.jpg", "054.jpg", "055.jpg", "056.jpg", "057.jpg", "058.jpg", "059.jpg", "060.jpg", "061.jpg"]}, {"slug": "c04", "name": "汪汪隊", "icon": "🐾", "files": ["001.jpg", "002.jpg", "003.jpg"]}, {"slug": "c05", "name": "寶可夢", "icon": "⚡", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "007.jpg", "008.jpg", "009.jpg", "010.jpg", "011.jpg", "012.jpg", "013.jpg", "014.jpg", "015.jpg", "016.jpg", "017.jpg", "018.jpg", "019.jpg", "020.jpg", "021.jpg", "022.jpg", "023.jpg", "024.jpg", "025.jpg", "026.jpg", "027.jpg", "028.jpg", "029.jpg", "030.jpg", "031.jpg", "032.jpg", "033.jpg", "034.jpg", "035.jpg", "036.jpg", "037.jpg"]}, {"slug": "c06", "name": "超級瑪莉", "icon": "🍄", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "007.jpg", "008.jpg", "009.jpg", "010.jpg", "011.jpg", "012.jpg", "013.jpg"]}, {"slug": "c07", "name": "蠟筆小新", "icon": "✏️", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg"]}, {"slug": "c08", "name": "庫洛米", "icon": "🖤", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "007.jpg", "008.jpg", "009.jpg", "010.jpg", "011.jpg"]}, {"slug": "c09", "name": "美樂蒂", "icon": "🎀", "files": ["001.jpg", "002.jpg"]}, {"slug": "c10", "name": "KITTY", "icon": "🐱", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "007.jpg", "008.jpg", "009.jpg", "010.jpg", "011.jpg", "012.jpg"]}, {"slug": "c11", "name": "大耳狗", "icon": "🐶", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "007.jpg", "008.jpg", "009.jpg", "010.jpg", "011.jpg", "012.jpg", "013.jpg", "014.jpg", "015.jpg", "016.jpg", "017.jpg", "018.jpg", "019.jpg", "020.jpg", "021.jpg", "022.jpg", "023.jpg", "024.jpg", "025.jpg", "026.jpg", "027.jpg", "028.jpg", "029.jpg", "030.jpg", "031.jpg", "032.jpg", "033.jpg", "034.jpg", "035.jpg", "036.jpg", "037.jpg", "038.jpg"]}, {"slug": "c12", "name": "小熊維尼", "icon": "🍯", "files": []}, {"slug": "c13", "name": "麥塊", "icon": "🟫", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "007.jpg", "008.jpg", "009.jpg", "010.jpg", "011.jpg", "012.jpg", "013.jpg", "014.jpg", "015.jpg", "016.jpg", "017.jpg", "018.jpg", "019.jpg", "020.jpg", "021.jpg", "022.jpg", "023.jpg", "024.jpg", "025.jpg", "026.jpg", "027.jpg", "028.jpg", "029.jpg", "030.jpg"]}, {"slug": "c14", "name": "龍貓", "icon": "🍃", "files": ["001.jpg"]}, {"slug": "c15", "name": "湯姆貓與傑利鼠", "icon": "🐭", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "007.jpg", "008.jpg", "009.jpg", "010.jpg", "011.jpg", "012.jpg", "013.jpg"]}, {"slug": "c16", "name": "海綿寶寶", "icon": "🧽", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "007.jpg", "008.jpg", "009.jpg", "010.jpg", "011.jpg", "012.jpg", "013.jpg", "014.jpg", "015.jpg", "016.jpg", "017.jpg", "018.jpg", "019.jpg", "020.jpg", "021.jpg", "022.jpg", "023.jpg", "024.jpg", "025.jpg", "026.jpg", "027.jpg", "028.jpg", "029.jpg", "030.jpg", "031.jpg", "032.jpg", "033.jpg", "034.jpg", "035.jpg", "036.jpg"]}, {"slug": "c17", "name": "新年", "icon": "🧧", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg"]}, {"slug": "c18", "name": "小馬寶莉", "icon": "🦄", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "007.jpg", "008.jpg", "009.jpg", "010.jpg", "011.jpg", "012.jpg"]}, {"slug": "c19", "name": "動物方程式", "icon": "🦊", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "007.jpg", "008.jpg"]}, {"slug": "c20", "name": "米飛兔", "icon": "🐰", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "007.jpg", "008.jpg", "009.jpg"]}, {"slug": "c21", "name": "線條小狗", "icon": "🐕", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "007.jpg", "008.jpg", "009.jpg"]}, {"slug": "c22", "name": "草莓熊", "icon": "🍓", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "007.jpg", "008.jpg", "009.jpg"]}, {"slug": "c23", "name": "三麗鷗", "icon": "💗", "files": ["001.jpg", "002.jpg", "003.jpg"]}, {"slug": "c24", "name": "怕洽狗", "icon": "🐩", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "007.jpg", "008.jpg", "009.jpg"]}, {"slug": "c25", "name": "卡皮巴拉", "icon": "🦫", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "007.jpg", "008.jpg", "009.jpg"]}, {"slug": "c26", "name": "角落生物", "icon": "🍥", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "007.jpg", "008.jpg", "009.jpg", "010.jpg", "011.jpg", "012.jpg", "013.jpg", "014.jpg", "015.jpg", "016.jpg", "017.jpg"]}, {"slug": "c27", "name": "其他", "icon": "📁", "files": ["001.jpg", "002.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "007.jpg", "008.jpg", "009.jpg", "010.jpg", "011.jpg", "012.jpg", "013.jpg", "014.jpg", "015.jpg", "016.jpg", "017.jpg", "018.jpg", "019.jpg", "020.jpg", "021.jpg", "022.jpg", "023.jpg", "024.jpg", "025.jpg", "026.jpg", "027.jpg"]}];
+var state = {view:'home', category:null, images:[]};
+var $app = document.getElementById('app');
+
+function byCategory(name){
+  var c = DATA.filter(function(x){return x.name===name;})[0];
+  return c ? c.files.map(function(fn){return {t:'thumbs/'+c.slug+'/'+fn, f:'images/'+c.slug+'/'+fn};}) : [];
+}
+
+function render(){ if(state.view==='home') renderHome(); else renderAlbum(); }
+
+function renderHome(){
+  var html = '<header><h1>🗂️ 圖面整理相簿</h1><p>點分類瀏覽,點圖放大,雙指縮放,左右滑動切換</p></header>';
+  html += '<div class="cat-grid">';
+  DATA.forEach(function(c0){
+    var c=[c0.name,c0.icon]; var n = c0.files.length;
+    html += '<div class="cat-btn" data-cat="'+c[0]+'" data-empty="'+(n===0?1:0)+'">'+
+      '<div class="cat-icon">'+c[1]+'</div>'+
+      '<div><div class="cat-name">'+c[0]+'</div><div class="cat-count">'+n+' 張</div></div></div>';
+  });
+  html += '</div>';
+  $app.innerHTML = html;
+  Array.prototype.forEach.call(document.querySelectorAll('.cat-btn'), function(el){
+    el.addEventListener('click', function(){
+      state.view='album'; state.category=el.dataset.cat; render();
+    });
+  });
+}
+
+function renderAlbum(){
+  var cat0 = DATA.filter(function(c){return c.name===state.category;})[0]; var cat=[cat0.name,cat0.icon];
+  var images = byCategory(state.category);
+  state.images = images;
+  var html = '<div class="topbar"><button class="back-btn" id="backBtn">‹ 分類</button>'+
+    '<h2>'+cat[1]+' '+cat[0]+'</h2><span style="width:60px"></span></div>';
+  if (images.length===0){
+    html += '<div class="empty-state">這個分類目前沒有圖片</div>';
+  } else {
+    html += '<div class="thumb-grid">';
+    images.forEach(function(img,i){
+      html += '<div class="thumb" data-i="'+i+'"><img src="'+img.t+'" loading="lazy"></div>';
+    });
+    html += '</div>';
+  }
+  $app.innerHTML = html;
+  document.getElementById('backBtn').addEventListener('click', function(){state.view='home'; render();});
+  Array.prototype.forEach.call(document.querySelectorAll('.thumb'), function(el){
+    el.addEventListener('click', function(){ openViewer(parseInt(el.dataset.i,10)); });
+  });
+}
+
+// viewer
+var $viewer=document.getElementById('viewer'), $viewerImg=document.getElementById('viewerImg'), $viewerPos=document.getElementById('viewerPos');
+var viewerIndex=0;
+function openViewer(i){ viewerIndex=i; updateViewer(); $viewer.classList.add('open'); }
+function closeViewer(){ $viewer.classList.remove('open'); }
+function updateViewer(){
+  var img = state.images[viewerIndex];
+  if(!img){ closeViewer(); return; }
+  $viewerImg.src = img.f;
+  zoom.scale=1; zoom.panX=0; zoom.panY=0;
+  $viewerImg.classList.remove('animate');
+  $viewerImg.style.transform='';
+  $viewerPos.textContent = (viewerIndex+1)+' / '+state.images.length;
+}
+document.getElementById('viewerClose').addEventListener('click', closeViewer);
+document.getElementById('viewerPrev').addEventListener('click', function(){
+  viewerIndex=(viewerIndex-1+state.images.length)%state.images.length; updateViewer();
+});
+document.getElementById('viewerNext').addEventListener('click', function(){
+  viewerIndex=(viewerIndex+1)%state.images.length; updateViewer();
+});
+
+var $stage=document.getElementById('viewerStage');
+var zoom={scale:1,panX:0,panY:0}; var MAX_SCALE=4,MIN_SCALE=1;
+function applyZoom(animate){
+  $viewerImg.classList.toggle('animate', !!animate);
+  $viewerImg.style.transform='translate('+zoom.panX+'px,'+zoom.panY+'px) scale('+zoom.scale+')';
+}
+function resetZoom(animate){ zoom.scale=1;zoom.panX=0;zoom.panY=0; applyZoom(animate); }
+function clamp(v,lo,hi){return Math.min(hi,Math.max(lo,v));}
+var gesture=null, startDist=0, startScale=1, startMid={x:0,y:0}, startPan={x:0,y:0}, swipeStartX=null, lastTapTime=0;
+function dist(t0,t1){return Math.hypot(t1.clientX-t0.clientX, t1.clientY-t0.clientY);}
+function mid(t0,t1){return {x:(t0.clientX+t1.clientX)/2, y:(t0.clientY+t1.clientY)/2};}
+$stage.addEventListener('touchstart', function(e){
+  if(e.touches.length===2){
+    gesture='pinch'; startDist=dist(e.touches[0],e.touches[1]); startScale=zoom.scale;
+    startMid=mid(e.touches[0],e.touches[1]); startPan={x:zoom.panX,y:zoom.panY};
+  } else if(e.touches.length===1){
+    if(zoom.scale>1.02){
+      gesture='pan'; startMid={x:e.touches[0].clientX,y:e.touches[0].clientY}; startPan={x:zoom.panX,y:zoom.panY};
+    } else { gesture='swipe'; swipeStartX=e.touches[0].clientX; }
+  }
+}, {passive:true});
+$stage.addEventListener('touchmove', function(e){
+  if(gesture==='pinch' && e.touches.length===2){
+    e.preventDefault();
+    var d=dist(e.touches[0],e.touches[1]); var m=mid(e.touches[0],e.touches[1]);
+    zoom.scale=clamp(startScale*(d/startDist), MIN_SCALE, MAX_SCALE);
+    zoom.panX=startPan.x+(m.x-startMid.x); zoom.panY=startPan.y+(m.y-startMid.y);
+    applyZoom(false);
+  } else if(gesture==='pan' && e.touches.length===1){
+    e.preventDefault();
+    zoom.panX=startPan.x+(e.touches[0].clientX-startMid.x); zoom.panY=startPan.y+(e.touches[0].clientY-startMid.y);
+    applyZoom(false);
+  }
+}, {passive:false});
+$stage.addEventListener('touchend', function(e){
+  if(gesture==='swipe' && swipeStartX!==null && e.changedTouches.length){
+    var dx=e.changedTouches[0].clientX-swipeStartX;
+    if(Math.abs(dx)>50 && state.images.length){
+      if(dx>0) viewerIndex=(viewerIndex-1+state.images.length)%state.images.length;
+      else viewerIndex=(viewerIndex+1)%state.images.length;
+      updateViewer();
+    } else {
+      var now=Date.now();
+      if(now-lastTapTime<300){ if(zoom.scale>1.02) resetZoom(true); else { zoom.scale=2.2; applyZoom(true);} }
+      lastTapTime=now;
+    }
+  }
+  if(zoom.scale<1.02) resetZoom(true); else if(zoom.scale>MAX_SCALE){zoom.scale=MAX_SCALE; applyZoom(true);}
+  gesture=null;
+});
+$viewerImg.addEventListener('dblclick', function(){ if(zoom.scale>1.02) resetZoom(true); else { zoom.scale=2.2; applyZoom(true);} });
+
+render();
+
+</script></body></html>
