@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>圖面整理相簿</title>
+<title>拼豆圖庫</title>
 <style>
   :root{
     --bg:#f7f7f5; --panel:#ffffff; --ink:#1f2328; --ink-soft:#6b7280;
@@ -70,7 +70,7 @@ function byCategory(name){
 function render(){ if(state.view==='home') renderHome(); else renderAlbum(); }
 
 function renderHome(){
-  var html = '<header><h1>🗂️ 圖面整理相簿</h1><p>點分類瀏覽,點圖放大,雙指縮放,左右滑動切換</p></header>';
+  var html = '<header><h1>🗂️ 拼豆圖庫</h1><p>點分類瀏覽,點圖放大,雙指縮放,左右滑動切換</p></header>';
   html += '<div class="cat-grid">';
   DATA.forEach(function(c0){
     var c=[c0.name,c0.icon]; var n = c0.files.length;
