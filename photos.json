@@ -165,6 +165,12 @@
   "slug": "c05_寶可夢",
   "name": "寶可夢",
   "icon": "⚡",
+  "links": [
+   {
+    "name": "寶可夢",
+    "url": "https://nayakoko.com/pokemon-perler-beads-matome/"
+   }
+  ],
   "files": [
    "001.jpg",
    "002.jpg",

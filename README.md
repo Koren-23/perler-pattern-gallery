@@ -24,6 +24,7 @@
 - 想先看看會改什麼:`python tools/update_gallery.py --dry-run`
 - 換掉同名原圖時,加上 `--rebuild-thumbs` 重新產生縮圖
 - 新增分類:在 `images/` 建一個新資料夾,命名為「接續編號_分類名」(例如 `c30_小熊`),執行工具後分類名稱會自動取底線後的文字;圖示預設 📁,想換可到 `photos.json` 修改 `icon` 後再執行一次工具。新分類會排在最後,想調整順序可在 `photos.json` 移動該分類的位置
+- 分類頁加參考連結:在 `photos.json` 該分類加上 `"links": [{"name": "顯示名稱", "url": "網址"}]`,再執行一次工具
 - 已有的分類想改名時,資料夾名稱與 `photos.json` 的 `slug`、`name` 要一起改
 - 需要 Python 3 與 Pillow(`pip install pillow`)
 
