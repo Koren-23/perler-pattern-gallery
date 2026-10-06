@@ -24,7 +24,7 @@
   .card p,.card ol{font-size:.82rem;color:var(--ink-soft);line-height:1.6;margin:0 0 10px;}
   .card ol{padding-left:1.2em;}
   label.field{display:block;font-size:.8rem;font-weight:600;margin:0 0 6px;}
-  select,input[type=password]{width:100%;font-size:1rem;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--panel);color:var(--ink);}
+  select,input[type=password],input[type=text]{width:100%;font-size:1rem;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--panel);color:var(--ink);}
   .pick{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:12px;padding:14px;border:1.5px dashed var(--border);
     border-radius:12px;font-weight:600;font-size:.95rem;color:var(--accent);cursor:pointer;}
   .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:12px;}
@@ -37,6 +37,10 @@
   .status.ok{color:var(--ok);}
   .foot{display:flex;justify-content:space-between;align-items:center;font-size:.8rem;padding:4px 2px;}
   .foot a{color:var(--accent);text-decoration:none;}
+  .newcat-toggle{margin-top:8px;color:var(--accent);text-decoration:none;font-weight:600;}
+  .newcat{margin-top:8px;padding:12px;border:1px solid var(--border);border-radius:12px;display:grid;gap:8px;}
+  .secondary{background:var(--bg);color:var(--ink);border:1px solid var(--border);border-radius:10px;padding:10px;font-size:.95rem;font-weight:600;cursor:pointer;}
+  .secondary:disabled{opacity:.4;cursor:default;}
   .link{background:none;border:none;color:var(--ink-soft);padding:0;cursor:pointer;text-decoration:underline;font-size:.8rem;}
 </style>
 </head>
@@ -56,6 +60,13 @@
     <div class="card">
       <label class="field" for="cat">分類</label>
       <select id="cat"></select>
+      <button class="link newcat-toggle" id="newCatToggle" type="button">＋ 新增分類</button>
+      <div class="newcat" id="newCatBox" hidden>
+        <input type="text" id="newCatName" placeholder="分類名稱,例如:小熊" autocomplete="off">
+        <input type="text" id="newCatIcon" placeholder="圖示(可留空,預設 📁)" autocomplete="off">
+        <button class="secondary" id="newCatBtn" type="button">建立分類</button>
+        <div class="status" id="newCatStatus"></div>
+      </div>
       <label class="pick">📷 選擇照片<input type="file" id="files" accept="image/*" multiple hidden></label>
       <div class="grid" id="previews"></div>
       <button class="primary" id="uploadBtn" disabled>上傳</button>
@@ -181,35 +192,71 @@ async function loadPhotos(){
   if (last && photos.some(function(c){ return c.slug === last; })) sel.value = last;
 }
 
-async function commitUpload(slug, blobShas){
+// 讀取 GitHub 上最新的清單與網頁,作為這次修改的基礎
+async function readState(){
   var ref = await gh('/git/ref/heads/' + BRANCH);
   var head = ref.object.sha;
   var commit = await gh('/git/commits/' + head);
   var data = JSON.parse(b64ToText((await gh('/contents/photos.json?ref=' + head)).content));
   var html = b64ToText((await gh('/contents/index.html?ref=' + head)).content);
-  var cat = data.filter(function(c){ return c.slug === slug; })[0];
+  return { head: head, baseTree: commit.tree.sha, data: data, html: html };
+}
+
+// 把 extra 檔案連同更新後的 photos.json / index.html 存成一個 commit
+async function writeState(s, extra, message){
+  if (!DATA_LINE.test(s.html)) throw new Error('index.html 裡找不到 var DATA=…; 這一行');
+  var line = 'var DATA=' + pyCompact(s.data) + ';';
+  var html = s.html.replace(DATA_LINE, function(){ return line; });
+  var tree = extra.concat([
+    { path: 'photos.json', mode: '100644', type: 'blob', content: pyIndent(s.data) },
+    { path: 'index.html', mode: '100644', type: 'blob', content: html }
+  ]);
+  var t = await gh('/git/trees', 'POST', { base_tree: s.baseTree, tree: tree });
+  var c = await gh('/git/commits', 'POST', { message: message, tree: t.sha, parents: [s.head] });
+  await gh('/git/refs/heads/' + BRANCH, 'PATCH', { sha: c.sha });
+}
+
+// 422:這段期間 GitHub 上有其他更新,重新讀取後再試
+async function withRetry(st, fn){
+  for (var attempt = 0; ; attempt++) {
+    try { return await fn(); }
+    catch (e) {
+      if (e.status === 422 && attempt < 2) { setStatus(st, '偵測到其他更新,重試中…'); continue; }
+      throw e;
+    }
+  }
+}
+
+async function commitUpload(slug, blobShas){
+  var s = await readState();
+  var cat = s.data.filter(function(c){ return c.slug === slug; })[0];
   if (!cat) throw new Error('找不到分類 ' + slug + ',可能已被改名,請重新整理頁面');
 
   var n = nextNumber(cat.files), names = [], tree = [];
-  blobShas.forEach(function(s, i){
+  blobShas.forEach(function(b, i){
     var name = pad3(n + i) + '.jpg';
     names.push(name);
-    tree.push({ path: 'images/' + slug + '/' + name, mode: '100644', type: 'blob', sha: s.orig });
-    tree.push({ path: 'thumbs/' + slug + '/' + name, mode: '100644', type: 'blob', sha: s.thumb });
+    tree.push({ path: 'images/' + slug + '/' + name, mode: '100644', type: 'blob', sha: b.orig });
+    tree.push({ path: 'thumbs/' + slug + '/' + name, mode: '100644', type: 'blob', sha: b.thumb });
   });
   cat.files = cat.files.concat(names).sort();
 
-  if (!DATA_LINE.test(html)) throw new Error('index.html 裡找不到 var DATA=…; 這一行');
-  var line = 'var DATA=' + pyCompact(data) + ';';
-  html = html.replace(DATA_LINE, function(){ return line; });
-  tree.push({ path: 'photos.json', mode: '100644', type: 'blob', content: pyIndent(data) });
-  tree.push({ path: 'index.html', mode: '100644', type: 'blob', content: html });
-
-  var t = await gh('/git/trees', 'POST', { base_tree: commit.tree.sha, tree: tree });
   var label = names.length === 1 ? names[0].slice(0, 3) : names[0].slice(0, 3) + '-' + names[names.length - 1].slice(0, 3);
-  var c = await gh('/git/commits', 'POST', { message: '手機上傳:' + cat.name + ' ' + label, tree: t.sha, parents: [head] });
-  await gh('/git/refs/heads/' + BRANCH, 'PATCH', { sha: c.sha });
+  await writeState(s, tree, '手機上傳:' + cat.name + ' ' + label);
   return { cat: cat, names: names };
+}
+
+// 新分類:編號接在最大的 cNN 後面,資料夾名稱去掉 Windows 不允許的字元(例如「/」)
+var INVALID_CHARS = /[\\\/:*?"<>|]/g;
+async function commitNewCategory(name, icon){
+  var s = await readState();
+  if (s.data.some(function(c){ return c.name === name; })) throw new Error('已經有「' + name + '」這個分類');
+  var max = 0;
+  s.data.forEach(function(c){ var m = /^c(\d+)_/.exec(c.slug); if (m) max = Math.max(max, parseInt(m[1], 10)); });
+  var slug = 'c' + ('0' + (max + 1)).slice(-2) + '_' + name.replace(INVALID_CHARS, '');
+  s.data.push({ slug: slug, name: name, icon: icon || '📁', files: [] });
+  await writeState(s, [{ path: 'images/' + slug + '/.gitkeep', mode: '100644', type: 'blob', content: '' }], '手機新增分類:' + name);
+  return slug;
 }
 
 async function upload(){
@@ -228,15 +275,7 @@ async function upload(){
       shas.push({ orig: o.sha, thumb: t.sha });
     }
     setStatus(st, '更新圖庫清單…');
-    var result;
-    for (var attempt = 0; ; attempt++) {
-      try { result = await commitUpload(slug, shas); break; }
-      catch (e) {
-        // 422:上傳期間 GitHub 上有其他更新,重新讀取後再試
-        if (e.status === 422 && attempt < 2) { setStatus(st, '偵測到其他更新,重試中…'); continue; }
-        throw e;
-      }
-    }
+    var result = await withRetry(st, function(){ return commitUpload(slug, shas); });
     setStatus(st, '✅ 完成!' + result.cat.name + ' 新增 ' + result.names.length + ' 張(' + result.names.join(', ') + ')。\n網站約 1 分鐘後更新。', 'ok');
     picked = [];
     $('previews').innerHTML = '';
@@ -265,6 +304,37 @@ $('files').addEventListener('change', function(){
   $('uploadBtn').disabled = !picked.length || busy;
 });
 $('uploadBtn').addEventListener('click', upload);
+
+$('newCatToggle').addEventListener('click', function(){
+  var box = $('newCatBox');
+  box.hidden = !box.hidden;
+  if (!box.hidden) $('newCatName').focus();
+});
+$('newCatBtn').addEventListener('click', async function(){
+  var name = $('newCatName').value.trim(), icon = $('newCatIcon').value.trim();
+  var st = $('newCatStatus');
+  if (!name) { setStatus(st, '請輸入分類名稱', 'err'); return; }
+  if (!name.replace(INVALID_CHARS, '')) { setStatus(st, '名稱需要包含文字', 'err'); return; }
+  if (busy) return;
+  busy = true;
+  this.disabled = true;
+  setStatus(st, '建立中…');
+  try {
+    var slug = await withRetry(st, function(){ return commitNewCategory(name, icon); });
+    await loadPhotos();
+    $('cat').value = slug;
+    setStored('lastCat', slug);
+    $('newCatName').value = ''; $('newCatIcon').value = '';
+    $('newCatBox').hidden = true;
+    setStatus($('status'), '✅ 已建立「' + name + '」分類,現在可以選照片上傳了。', 'ok');
+    setStatus(st, '');
+  } catch (e) {
+    setStatus(st, e.status === 401 ? '權杖無效或已過期,請重新設定。' : '❌ ' + e.message, 'err');
+  } finally {
+    busy = false;
+    this.disabled = false;
+  }
+});
 
 async function start(){
   token = getStored('ghToken');

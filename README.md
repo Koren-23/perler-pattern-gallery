@@ -44,7 +44,12 @@
 5. Permissions → Repository permissions → Contents 設為 **Read and write**
 6. Generate token,複製 `github_pat_` 開頭的那串,貼到上傳頁
 
-權杖過期或手機遺失時,到同一頁刪除(Revoke)舊權杖再產生新的即可。新增分類、改名、密碼等仍需在電腦上處理。
+也可以在上傳頁按「＋ 新增分類」,輸入名稱(與可選的圖示)直接建立新分類,會排在最後。
+
+權杖過期或手機遺失時,到同一頁刪除(Revoke)舊權杖再產生新的即可。改分類名稱、調整順序、刪除圖片、密碼等仍需在電腦上處理。
+
+### 電腦自動同步手機上傳的圖片
+`tools/auto_sync.ps1` 會執行 `git pull --ff-only`(只下載,不上傳、不覆蓋本機未版控的檔案),紀錄寫在 `%LOCALAPPDATA%\perler-gallery-sync.log`。可用 Windows「工作排程器」設定每天執行;沒設定的話,雙擊 `update_gallery.bat` 也會先同步。
 
 ## 注意
 圖紙多半帶有原作者浮水印,公開前請確認轉載授權。
