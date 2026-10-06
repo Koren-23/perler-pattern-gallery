@@ -15,6 +15,7 @@
 ## 新增圖片
 1. 把原圖放進 `images/cXX_分類名/`(檔名、格式不拘,jpg/png/webp 皆可)
 2. 雙擊 `update_gallery.bat`(或執行 `python tools/update_gallery.py`),它會:
+   - 先從 GitHub 取得最新內容(包含手機上傳的圖片),避免編號衝突
    - 把新圖改名為接續的編號 `NNN.jpg`(非 jpg 會轉成 jpg)
    - 產生對應縮圖到 `thumbs/cXX_分類名/`
    - 更新 `photos.json` 與 `index.html` 內的 `DATA`
@@ -28,6 +29,22 @@
 - 分類頁加參考連結:在 `photos.json` 該分類加上 `"links": [{"name": "顯示名稱", "url": "網址"}]`,再執行一次工具
 - 已有的分類想改名時,資料夾名稱與 `photos.json` 的 `slug`、`name` 要一起改
 - 需要 Python 3 與 Pillow(`pip install pillow`)
+
+## 手機上傳(iPhone)
+網址:https://koren-23.github.io/perler-pattern-gallery/upload.html
+(建議用 Safari 開啟後,按「分享 → 加入主畫面」,之後就像 App 一樣點開)
+
+選分類 → 選擇照片 → 上傳。網頁會自動縮小照片、產生縮圖、更新清單並存進 GitHub,約 1 分鐘後出現在圖庫。HEIC 會自動轉成 JPG。
+
+第一次使用需要貼上 GitHub 權杖(只存在那支手機,不會上傳):
+1. 登入 GitHub → 右上角頭像 → Settings → 左側最下方 Developer settings
+2. Personal access tokens → Fine-grained tokens → Generate new token
+3. Token name 隨意(例如「手機上傳」);Expiration 選想要的期限
+4. Repository access 選 Only select repositories → `perler-pattern-gallery`
+5. Permissions → Repository permissions → Contents 設為 **Read and write**
+6. Generate token,複製 `github_pat_` 開頭的那串,貼到上傳頁
+
+權杖過期或手機遺失時,到同一頁刪除(Revoke)舊權杖再產生新的即可。新增分類、改名、密碼等仍需在電腦上處理。
 
 ## 注意
 圖紙多半帶有原作者浮水印,公開前請確認轉載授權。

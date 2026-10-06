@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="上傳圖庫">
+<title>上傳到拼豆圖庫</title>
+<style>
+  :root{
+    --bg:#f7f7f5; --panel:#ffffff; --ink:#1f2328; --ink-soft:#6b7280;
+    --border:#e6e6e3; --accent:#2563eb; --accent-ink:#ffffff; --danger:#dc2626; --ok:#16a34a;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;}
+  .app{max-width:520px;margin:0 auto;padding:14px 16px 40px;}
+  header{padding:6px 2px 14px;}
+  header h1{font-size:1.2rem;font-weight:700;margin:0;}
+  header p{margin:4px 0 0;font-size:.8rem;color:var(--ink-soft);}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:12px;}
+  .card h2{font-size:.95rem;margin:0 0 8px;}
+  .card p,.card ol{font-size:.82rem;color:var(--ink-soft);line-height:1.6;margin:0 0 10px;}
+  .card ol{padding-left:1.2em;}
+  label.field{display:block;font-size:.8rem;font-weight:600;margin:0 0 6px;}
+  select,input[type=password]{width:100%;font-size:1rem;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--panel);color:var(--ink);}
+  .pick{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:12px;padding:14px;border:1.5px dashed var(--border);
+    border-radius:12px;font-weight:600;font-size:.95rem;color:var(--accent);cursor:pointer;}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:12px;}
+  .grid img{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;border:1px solid var(--border);display:block;}
+  button{font:inherit;}
+  .primary{width:100%;margin-top:12px;background:var(--accent);color:var(--accent-ink);border:none;border-radius:10px;padding:12px;font-size:1rem;font-weight:700;cursor:pointer;}
+  .primary:disabled{opacity:.4;cursor:default;}
+  .status{font-size:.85rem;margin-top:10px;line-height:1.5;white-space:pre-line;}
+  .status.err{color:var(--danger);}
+  .status.ok{color:var(--ok);}
+  .foot{display:flex;justify-content:space-between;align-items:center;font-size:.8rem;padding:4px 2px;}
+  .foot a{color:var(--accent);text-decoration:none;}
+  .link{background:none;border:none;color:var(--ink-soft);padding:0;cursor:pointer;text-decoration:underline;font-size:.8rem;}
+</style>
+</head>
+<body>
+<div class="app">
+  <header><h1>📤 上傳到拼豆圖庫</h1><p>選分類、選照片,按上傳。縮圖與清單會自動產生,約 1 分鐘後出現在圖庫。</p></header>
+
+  <section class="card" id="setup" hidden>
+    <h2>第一次使用:貼上 GitHub 權杖</h2>
+    <p>權杖只會存在這支手機裡,不會上傳到網站。取得方式見 README「手機上傳」。</p>
+    <input type="password" id="tokenInput" placeholder="github_pat_…" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <button class="primary" id="saveToken">儲存並開始</button>
+    <div class="status" id="setupStatus"></div>
+  </section>
+
+  <section id="main" hidden>
+    <div class="card">
+      <label class="field" for="cat">分類</label>
+      <select id="cat"></select>
+      <label class="pick">📷 選擇照片<input type="file" id="files" accept="image/*" multiple hidden></label>
+      <div class="grid" id="previews"></div>
+      <button class="primary" id="uploadBtn" disabled>上傳</button>
+      <div class="status" id="status"></div>
+    </div>
+    <div class="foot"><a href="./">← 回圖庫</a><button class="link" id="resetToken">清除這支手機的權杖</button></div>
+  </section>
+</div>
+<script>
+var OWNER = 'Koren-23', REPO = 'perler-pattern-gallery', BRANCH = 'main';
+var API = 'https://api.github.com/repos/' + OWNER + '/' + REPO;
+// 與 tools/update_gallery.py 相同的規格
+var THUMB_BOX = 300, THUMB_Q = 0.8, MAX_SIDE = 2560, ORIG_Q = 0.9;
+var STANDARD_NAME = /^\d{3}\.jpg$/;
+var DATA_LINE = /^var DATA=.*;$/m;
+
+var $ = function(id){ return document.getElementById(id); };
+var token = null, photos = null, picked = [], busy = false;
+
+function getStored(k){ try { return localStorage.getItem(k); } catch(e) { return null; } }
+function setStored(k, v){ try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch(e) {} }
+
+function setStatus(el, text, kind){ el.textContent = text; el.className = 'status' + (kind ? ' ' + kind : ''); }
+
+async function gh(path, method, body){
+  var r = await fetch(API + path, {
+    method: method || 'GET',
+    cache: 'no-store',
+    headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  if (!r.ok) {
+    var e = new Error('GitHub 回應 ' + r.status + ':' + (await r.text()).slice(0, 200));
+    e.status = r.status;
+    throw e;
+  }
+  return r.json();
+}
+
+function b64ToText(b64){
+  var bin = atob(b64.replace(/\s/g, ''));
+  var bytes = new Uint8Array(bin.length);
+  for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+function bytesToB64(bytes){
+  var s = '';
+  for (var i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+// 與 Python json.dumps(..., ensure_ascii=False) 輸出一致,讓電腦端的工具不會產生多餘差異
+function pyCompact(v){
+  if (Array.isArray(v)) return '[' + v.map(pyCompact).join(', ') + ']';
+  if (v && typeof v === 'object') return '{' + Object.keys(v).map(function(k){ return JSON.stringify(k) + ': ' + pyCompact(v[k]); }).join(', ') + '}';
+  return JSON.stringify(v);
+}
+function pyIndent(v, ind){
+  ind = ind || '';
+  var nx = ind + ' ';
+  if (Array.isArray(v)) {
+    if (!v.length) return '[]';
+    return '[\n' + v.map(function(x){ return nx + pyIndent(x, nx); }).join(',\n') + '\n' + ind + ']';
+  }
+  if (v && typeof v === 'object') {
+    var ks = Object.keys(v);
+    if (!ks.length) return '{}';
+    return '{\n' + ks.map(function(k){ return nx + JSON.stringify(k) + ': ' + pyIndent(v[k], nx); }).join(',\n') + '\n' + ind + '}';
+  }
+  return JSON.stringify(v);
+}
+
+function nextNumber(files){
+  var max = 0;
+  files.forEach(function(f){ if (STANDARD_NAME.test(f)) max = Math.max(max, parseInt(f, 10)); });
+  return max + 1;
+}
+function pad3(n){ return ('00' + n).slice(-3); }
+
+function loadImage(file){
+  return new Promise(function(resolve, reject){
+    var img = new Image();
+    img.onload = function(){ resolve(img); };
+    img.onerror = function(){ reject(new Error('無法讀取照片:' + file.name)); };
+    img.src = URL.createObjectURL(file);
+  });
+}
+function encodeJpeg(img, box, quality){
+  var s = Math.min(1, box / img.naturalWidth, box / img.naturalHeight);
+  var w = Math.max(1, Math.round(img.naturalWidth * s)), h = Math.max(1, Math.round(img.naturalHeight * s));
+  var c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  var x = c.getContext('2d');
+  x.fillStyle = '#fff'; x.fillRect(0, 0, w, h);
+  x.drawImage(img, 0, 0, w, h);
+  return new Promise(function(resolve, reject){
+    c.toBlob(function(b){ b ? resolve(b) : reject(new Error('照片轉檔失敗')); }, 'image/jpeg', quality);
+  });
+}
+async function blobB64(blob){ return bytesToB64(new Uint8Array(await blob.arrayBuffer())); }
+
+// 原圖:已是 JPG 且不超過 MAX_SIDE 就原檔上傳,否則轉成 JPG 並縮小
+async function prepare(file){
+  var img = await loadImage(file);
+  var small = Math.max(img.naturalWidth, img.naturalHeight) <= MAX_SIDE;
+  var orig = (file.type === 'image/jpeg' && small) ? file : await encodeJpeg(img, MAX_SIDE, ORIG_Q);
+  var thumb = await encodeJpeg(img, THUMB_BOX, THUMB_Q);
+  URL.revokeObjectURL(img.src);
+  return { orig: await blobB64(orig), thumb: await blobB64(thumb) };
+}
+
+async function loadPhotos(){
+  var f = await gh('/contents/photos.json?ref=' + BRANCH);
+  photos = JSON.parse(b64ToText(f.content));
+  var sel = $('cat'), last = getStored('lastCat');
+  sel.innerHTML = '';
+  photos.forEach(function(c){
+    var o = document.createElement('option');
+    o.value = c.slug;
+    o.textContent = c.icon + ' ' + c.name + '(' + c.files.length + ' 張)';
+    sel.appendChild(o);
+  });
+  if (last && photos.some(function(c){ return c.slug === last; })) sel.value = last;
+}
+
+async function commitUpload(slug, blobShas){
+  var ref = await gh('/git/ref/heads/' + BRANCH);
+  var head = ref.object.sha;
+  var commit = await gh('/git/commits/' + head);
+  var data = JSON.parse(b64ToText((await gh('/contents/photos.json?ref=' + head)).content));
+  var html = b64ToText((await gh('/contents/index.html?ref=' + head)).content);
+  var cat = data.filter(function(c){ return c.slug === slug; })[0];
+  if (!cat) throw new Error('找不到分類 ' + slug + ',可能已被改名,請重新整理頁面');
+
+  var n = nextNumber(cat.files), names = [], tree = [];
+  blobShas.forEach(function(s, i){
+    var name = pad3(n + i) + '.jpg';
+    names.push(name);
+    tree.push({ path: 'images/' + slug + '/' + name, mode: '100644', type: 'blob', sha: s.orig });
+    tree.push({ path: 'thumbs/' + slug + '/' + name, mode: '100644', type: 'blob', sha: s.thumb });
+  });
+  cat.files = cat.files.concat(names).sort();
+
+  if (!DATA_LINE.test(html)) throw new Error('index.html 裡找不到 var DATA=…; 這一行');
+  var line = 'var DATA=' + pyCompact(data) + ';';
+  html = html.replace(DATA_LINE, function(){ return line; });
+  tree.push({ path: 'photos.json', mode: '100644', type: 'blob', content: pyIndent(data) });
+  tree.push({ path: 'index.html', mode: '100644', type: 'blob', content: html });
+
+  var t = await gh('/git/trees', 'POST', { base_tree: commit.tree.sha, tree: tree });
+  var label = names.length === 1 ? names[0].slice(0, 3) : names[0].slice(0, 3) + '-' + names[names.length - 1].slice(0, 3);
+  var c = await gh('/git/commits', 'POST', { message: '手機上傳:' + cat.name + ' ' + label, tree: t.sha, parents: [head] });
+  await gh('/git/refs/heads/' + BRANCH, 'PATCH', { sha: c.sha });
+  return { cat: cat, names: names };
+}
+
+async function upload(){
+  if (busy || !picked.length) return;
+  busy = true;
+  $('uploadBtn').disabled = true;
+  var st = $('status'), slug = $('cat').value;
+  setStored('lastCat', slug);
+  try {
+    var shas = [];
+    for (var i = 0; i < picked.length; i++) {
+      setStatus(st, '處理並上傳照片 ' + (i + 1) + ' / ' + picked.length + '…');
+      var p = await prepare(picked[i]);
+      var o = await gh('/git/blobs', 'POST', { content: p.orig, encoding: 'base64' });
+      var t = await gh('/git/blobs', 'POST', { content: p.thumb, encoding: 'base64' });
+      shas.push({ orig: o.sha, thumb: t.sha });
+    }
+    setStatus(st, '更新圖庫清單…');
+    var result;
+    for (var attempt = 0; ; attempt++) {
+      try { result = await commitUpload(slug, shas); break; }
+      catch (e) {
+        // 422:上傳期間 GitHub 上有其他更新,重新讀取後再試
+        if (e.status === 422 && attempt < 2) { setStatus(st, '偵測到其他更新,重試中…'); continue; }
+        throw e;
+      }
+    }
+    setStatus(st, '✅ 完成!' + result.cat.name + ' 新增 ' + result.names.length + ' 張(' + result.names.join(', ') + ')。\n網站約 1 分鐘後更新。', 'ok');
+    picked = [];
+    $('previews').innerHTML = '';
+    $('files').value = '';
+    await loadPhotos();
+    $('cat').value = slug;
+  } catch (e) {
+    if (e.status === 401) { setStatus(st, '權杖無效或已過期,請重新設定。', 'err'); }
+    else { setStatus(st, '❌ 上傳失敗:' + e.message, 'err'); }
+  } finally {
+    busy = false;
+    $('uploadBtn').disabled = !picked.length;
+  }
+}
+
+$('files').addEventListener('change', function(){
+  picked = Array.prototype.slice.call(this.files);
+  var box = $('previews');
+  box.innerHTML = '';
+  picked.forEach(function(f){
+    var img = document.createElement('img');
+    img.src = URL.createObjectURL(f);
+    box.appendChild(img);
+  });
+  setStatus($('status'), picked.length ? '已選 ' + picked.length + ' 張' : '');
+  $('uploadBtn').disabled = !picked.length || busy;
+});
+$('uploadBtn').addEventListener('click', upload);
+
+async function start(){
+  token = getStored('ghToken');
+  if (!token) { $('setup').hidden = false; $('main').hidden = true; return; }
+  try {
+    await loadPhotos();
+    $('setup').hidden = true; $('main').hidden = false;
+  } catch (e) {
+    $('setup').hidden = false; $('main').hidden = true;
+    setStatus($('setupStatus'), e.status === 401 ? '權杖無效或已過期,請重新貼上。' : '連線失敗:' + e.message, 'err');
+  }
+}
+$('saveToken').addEventListener('click', async function(){
+  var v = $('tokenInput').value.trim();
+  if (!v) return;
+  token = v;
+  setStatus($('setupStatus'), '檢查權杖…');
+  try {
+    var repo = await gh('');
+    if (!repo.permissions || !repo.permissions.push) throw new Error('這個權杖沒有寫入權限,請確認 Contents 設為 Read and write');
+    setStored('ghToken', v);
+    $('tokenInput').value = '';
+    setStatus($('setupStatus'), '');
+    await start();
+  } catch (e) {
+    token = null;
+    setStatus($('setupStatus'), e.status === 401 ? '權杖無效,請確認有完整複製。' : e.message, 'err');
+  }
+});
+$('resetToken').addEventListener('click', function(){
+  setStored('ghToken', null);
+  token = null;
+  start();
+});
+start();
+</script>
+</body>
+</html>

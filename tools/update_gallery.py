@@ -4,10 +4,12 @@
     python tools/update_gallery.py
 加上 --dry-run 只列出會做的事,不實際修改;
 換掉同名原圖時加上 --rebuild-thumbs 重新產生所有縮圖。
+執行前會先 git pull 取得手機上傳的圖片(--no-pull 可略過)。
 """
 import argparse
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -69,13 +71,35 @@ def make_thumb(src, dst):
         im.save(dst, "JPEG", quality=THUMB_QUALITY, optimize=True)
 
 
+def pull_latest(log):
+    """先拿到手機上傳的新圖,避免本機和手機各自用了同一個編號。"""
+    log("從 GitHub 取得最新內容(包含手機上傳的圖片)…")
+    try:
+        r = subprocess.run(["git", "pull", "--ff-only"], cwd=ROOT, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        log("[注意] 找不到 git,略過同步。\n")
+        return
+    if r.returncode == 0:
+        log(r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "已是最新")
+        log("")
+    else:
+        log("[注意] 無法自動同步 GitHub 上的最新內容,圖片仍會繼續處理。")
+        log("       版控前請告訴 Claude「有同步失敗」,以免編號衝突。")
+        log("       " + (r.stderr.strip().splitlines() or [""])[-1] + "\n")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--dry-run", action="store_true", help="只列出變更,不修改任何檔案")
     ap.add_argument("--rebuild-thumbs", action="store_true", help="重新產生所有縮圖(換掉同名原圖時使用)")
+    ap.add_argument("--no-pull", action="store_true", help="不先從 GitHub 取得最新內容")
     args = ap.parse_args()
     dry = args.dry_run
     log = print
+
+    if not (dry or args.no_pull):
+        pull_latest(log)
 
     data = json.loads(PHOTOS_JSON.read_text(encoding="utf-8"))
     by_slug = {c["slug"]: c for c in data}
