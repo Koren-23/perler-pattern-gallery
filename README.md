@@ -34,6 +34,9 @@
 - 已有的分類想改名時,資料夾名稱與 `photos.json` 的 `slug`、`name` 要一起改
 - 需要 Python 3 與 Pillow(`pip install pillow`)
 
+## 拼豆圖紙產生器
+`generator.html`(首頁上方有按鈕):選一張照片,設定寬高(顆)與顏色數量,自動產生附色號與每 10 格粗線的圖紙,以及每個顏色需要幾顆。可選擇去除背景。照片只在裝置上處理,不會上傳。色號是該圖紙自己的編號,不對應特定品牌。
+
 ## 手機上傳(iPhone)
 網址:https://koren-23.github.io/perler-pattern-gallery/upload.html
 (建議用 Safari 開啟後,按「分享 → 加入主畫面」,之後就像 App 一樣點開)
