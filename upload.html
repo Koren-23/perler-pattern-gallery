@@ -27,8 +27,13 @@
   select,input[type=password],input[type=text]{width:100%;font-size:1rem;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--panel);color:var(--ink);}
   .pick{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:12px;padding:14px;border:1.5px dashed var(--border);
     border-radius:12px;font-weight:600;font-size:.95rem;color:var(--accent);cursor:pointer;}
-  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:12px;}
+  .pick.disabled{opacity:.4;pointer-events:none;}
+  .group-title{font-size:.85rem;font-weight:700;margin:14px 0 6px;}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;}
+  .cell{position:relative;}
   .grid img{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;border:1px solid var(--border);display:block;}
+  .remove{position:absolute;top:3px;right:3px;width:24px;height:24px;border-radius:50%;border:none;background:rgba(0,0,0,.6);
+    color:#fff;font-size:.75rem;line-height:24px;padding:0;cursor:pointer;}
   button{font:inherit;}
   .primary{width:100%;margin-top:12px;background:var(--accent);color:var(--accent-ink);border:none;border-radius:10px;padding:12px;font-size:1rem;font-weight:700;cursor:pointer;}
   .primary:disabled{opacity:.4;cursor:default;}
@@ -67,8 +72,8 @@
         <button class="secondary" id="newCatBtn" type="button">建立分類</button>
         <div class="status" id="newCatStatus"></div>
       </div>
-      <label class="pick">📷 選擇照片<input type="file" id="files" accept="image/*" multiple hidden></label>
-      <div class="grid" id="previews"></div>
+      <label class="pick" id="pickLabel">📷 選擇照片加入這個分類<input type="file" id="files" accept="image/*" multiple hidden></label>
+      <div id="queue"></div>
       <button class="primary" id="uploadBtn" disabled>上傳</button>
       <div class="status" id="status"></div>
     </div>
@@ -227,23 +232,38 @@ async function withRetry(st, fn){
   }
 }
 
-async function commitUpload(slug, blobShas){
-  var s = await readState();
-  var cat = s.data.filter(function(c){ return c.slug === slug; })[0];
-  if (!cat) throw new Error('找不到分類 ' + slug + ',可能已被改名,請重新整理頁面');
-
-  var n = nextNumber(cat.files), names = [], tree = [];
-  blobShas.forEach(function(b, i){
-    var name = pad3(n + i) + '.jpg';
-    names.push(name);
-    tree.push({ path: 'images/' + slug + '/' + name, mode: '100644', type: 'blob', sha: b.orig });
-    tree.push({ path: 'thumbs/' + slug + '/' + name, mode: '100644', type: 'blob', sha: b.thumb });
+// 依分類分組,保留第一次出現的順序
+function groupBySlug(items){
+  var order = [], groups = {};
+  items.forEach(function(it){
+    if (!groups[it.slug]) { groups[it.slug] = []; order.push(it.slug); }
+    groups[it.slug].push(it);
   });
-  cat.files = cat.files.concat(names).sort();
+  return order.map(function(slug){ return { slug: slug, items: groups[slug] }; });
+}
 
-  var label = names.length === 1 ? names[0].slice(0, 3) : names[0].slice(0, 3) + '-' + names[names.length - 1].slice(0, 3);
-  await writeState(s, tree, '手機上傳:' + cat.name + ' ' + label);
-  return { cat: cat, names: names };
+// items: [{slug, orig, thumb}],可以橫跨多個分類,全部存成一個 commit
+async function commitUploads(items){
+  var s = await readState();
+  var tree = [], results = [];
+  groupBySlug(items).forEach(function(g){
+    var cat = s.data.filter(function(c){ return c.slug === g.slug; })[0];
+    if (!cat) throw new Error('找不到分類 ' + g.slug + ',可能已被改名,請重新整理頁面');
+    var n = nextNumber(cat.files), names = [];
+    g.items.forEach(function(b, i){
+      var name = pad3(n + i) + '.jpg';
+      names.push(name);
+      tree.push({ path: 'images/' + g.slug + '/' + name, mode: '100644', type: 'blob', sha: b.orig });
+      tree.push({ path: 'thumbs/' + g.slug + '/' + name, mode: '100644', type: 'blob', sha: b.thumb });
+    });
+    cat.files = cat.files.concat(names).sort();
+    results.push({ cat: cat, names: names });
+  });
+
+  var label = function(names){ return names.length === 1 ? names[0].slice(0, 3) : names[0].slice(0, 3) + '-' + names[names.length - 1].slice(0, 3); };
+  var msg = '手機上傳:' + results.map(function(r){ return r.cat.name + ' ' + label(r.names); }).join('、');
+  await writeState(s, tree, msg);
+  return results;
 }
 
 // 新分類:編號接在最大的 cNN 後面,資料夾名稱去掉 Windows 不允許的字元(例如「/」)
@@ -262,46 +282,85 @@ async function commitNewCategory(name, icon){
 async function upload(){
   if (busy || !picked.length) return;
   busy = true;
-  $('uploadBtn').disabled = true;
-  var st = $('status'), slug = $('cat').value;
-  setStored('lastCat', slug);
+  renderQueue();
+  var st = $('status'), keepSlug = $('cat').value;
   try {
-    var shas = [];
+    var items = [];
     for (var i = 0; i < picked.length; i++) {
       setStatus(st, '處理並上傳照片 ' + (i + 1) + ' / ' + picked.length + '…');
-      var p = await prepare(picked[i]);
+      var p = await prepare(picked[i].file);
       var o = await gh('/git/blobs', 'POST', { content: p.orig, encoding: 'base64' });
       var t = await gh('/git/blobs', 'POST', { content: p.thumb, encoding: 'base64' });
-      shas.push({ orig: o.sha, thumb: t.sha });
+      items.push({ slug: picked[i].slug, orig: o.sha, thumb: t.sha });
     }
     setStatus(st, '更新圖庫清單…');
-    var result = await withRetry(st, function(){ return commitUpload(slug, shas); });
-    setStatus(st, '✅ 完成!' + result.cat.name + ' 新增 ' + result.names.length + ' 張(' + result.names.join(', ') + ')。\n網站約 1 分鐘後更新。', 'ok');
+    var results = await withRetry(st, function(){ return commitUploads(items); });
+    var lines = results.map(function(r){ return r.cat.icon + ' ' + r.cat.name + ':' + r.names.length + ' 張'; });
+    setStatus(st, '✅ 完成!共 ' + items.length + ' 張\n' + lines.join('\n') + '\n網站約 1 分鐘後更新。', 'ok');
+    picked.forEach(function(p){ URL.revokeObjectURL(p.url); });
     picked = [];
-    $('previews').innerHTML = '';
-    $('files').value = '';
     await loadPhotos();
-    $('cat').value = slug;
+    $('cat').value = keepSlug;
   } catch (e) {
     if (e.status === 401) { setStatus(st, '權杖無效或已過期,請重新設定。', 'err'); }
-    else { setStatus(st, '❌ 上傳失敗:' + e.message, 'err'); }
+    else { setStatus(st, '❌ 上傳失敗:' + e.message + '\n照片仍保留在清單中,可以再按一次上傳。', 'err'); }
   } finally {
     busy = false;
-    $('uploadBtn').disabled = !picked.length;
+    renderQueue();
   }
 }
 
-$('files').addEventListener('change', function(){
-  picked = Array.prototype.slice.call(this.files);
-  var box = $('previews');
+function catOf(slug){ return (photos || []).filter(function(c){ return c.slug === slug; })[0]; }
+
+// 待上傳清單:依分類分組顯示,每張可按 ✕ 移除
+function renderQueue(){
+  var box = $('queue');
   box.innerHTML = '';
-  picked.forEach(function(f){
-    var img = document.createElement('img');
-    img.src = URL.createObjectURL(f);
-    box.appendChild(img);
+  groupBySlug(picked.map(function(p, i){ return { slug: p.slug, p: p, i: i }; })).forEach(function(g){
+    var cat = catOf(g.slug);
+    var h = document.createElement('div');
+    h.className = 'group-title';
+    h.textContent = (cat ? cat.icon + ' ' + cat.name : g.slug) + '(' + g.items.length + ' 張)';
+    box.appendChild(h);
+    var grid = document.createElement('div');
+    grid.className = 'grid';
+    g.items.forEach(function(it){
+      var cell = document.createElement('div');
+      cell.className = 'cell';
+      var img = document.createElement('img');
+      img.src = it.p.url;
+      cell.appendChild(img);
+      if (!busy) {
+        var x = document.createElement('button');
+        x.className = 'remove'; x.type = 'button'; x.textContent = '✕';
+        x.setAttribute('aria-label', '移除');
+        x.addEventListener('click', function(){
+          URL.revokeObjectURL(it.p.url);
+          picked.splice(picked.indexOf(it.p), 1);
+          renderQueue();
+        });
+        cell.appendChild(x);
+      }
+      grid.appendChild(cell);
+    });
+    box.appendChild(grid);
   });
-  setStatus($('status'), picked.length ? '已選 ' + picked.length + ' 張' : '');
-  $('uploadBtn').disabled = !picked.length || busy;
+  var n = picked.length, groups = groupBySlug(picked).length;
+  $('uploadBtn').textContent = n ? '上傳全部(' + n + ' 張' + (groups > 1 ? '、' + groups + ' 個分類' : '') + ')' : '上傳';
+  $('uploadBtn').disabled = !n || busy;
+  $('pickLabel').classList.toggle('disabled', busy);
+  $('files').disabled = busy;
+}
+
+$('files').addEventListener('change', function(){
+  var slug = $('cat').value;
+  setStored('lastCat', slug);
+  Array.prototype.forEach.call(this.files, function(f){
+    picked.push({ file: f, slug: slug, url: URL.createObjectURL(f) });
+  });
+  this.value = '';  // 讓同一批照片可以再選一次
+  setStatus($('status'), picked.length ? '已加入清單。可以換一個分類,再選照片繼續加入。' : '');
+  renderQueue();
 });
 $('uploadBtn').addEventListener('click', upload);
 

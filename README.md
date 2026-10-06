@@ -34,7 +34,7 @@
 網址:https://koren-23.github.io/perler-pattern-gallery/upload.html
 (建議用 Safari 開啟後,按「分享 → 加入主畫面」,之後就像 App 一樣點開)
 
-選分類 → 選擇照片 → 上傳。網頁會自動縮小照片、產生縮圖、更新清單並存進 GitHub,約 1 分鐘後出現在圖庫。HEIC 會自動轉成 JPG。
+選分類 → 選擇照片加入清單;可以換分類再選照片,累積好幾個分類 → 按一次「上傳全部」。清單中每張照片可按 ✕ 移除。網頁會自動縮小照片、產生縮圖、更新清單並存進 GitHub,約 1 分鐘後出現在圖庫。HEIC 會自動轉成 JPG。
 
 第一次使用需要貼上 GitHub 權杖(只存在那支手機,不會上傳):
 1. 登入 GitHub → 右上角頭像 → Settings → 左側最下方 Developer settings
