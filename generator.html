@@ -26,7 +26,9 @@
   label.field{display:block;font-size:.8rem;font-weight:600;}
   label.field input[type=number]{display:block;width:100%;margin-top:6px;font-size:1rem;padding:9px 10px;border:1px solid var(--border);border-radius:10px;}
   .slider{margin-top:14px;}
-  .slider input{width:100%;margin-top:6px;}
+  .slider input[type=range]{width:100%;margin-top:8px;}
+  .kbox{display:flex;align-items:center;gap:6px;margin-top:6px;font-weight:400;}
+  .kbox input{width:90px;font-size:1rem;padding:8px 10px;border:1px solid var(--border);border-radius:10px;}
   .check{display:flex;align-items:center;gap:8px;font-size:.85rem;margin-top:12px;}
   .check input{width:18px;height:18px;}
   .primary{width:100%;margin-top:16px;background:var(--accent);color:var(--accent-ink);border:none;border-radius:10px;padding:12px;font-size:1rem;font-weight:700;cursor:pointer;}
@@ -60,7 +62,7 @@
       <label class="field">高(顆)<input type="number" id="h" value="29" min="5" max="150" inputmode="numeric"></label>
     </div>
     <label class="check"><input type="checkbox" id="keep" checked>維持照片比例</label>
-    <label class="field slider">顏色數量:<span id="kv">12</span> 色<input type="range" id="k" min="2" max="40" value="12"></label>
+    <label class="field slider">顏色數量(最多 221 色)<span class="kbox"><input type="number" id="kn" min="2" max="221" value="12" inputmode="numeric"> 色</span><input type="range" id="k" min="2" max="221" value="12"></label>
     <label class="check"><input type="checkbox" id="nums" checked>格子裡顯示色號</label>
     <label class="check"><input type="checkbox" id="bg">去除背景(和四個角落相連的同色區域變成空白)</label>
     <button class="primary" id="go" disabled>產生圖紙</button>
@@ -101,60 +103,89 @@ function hex(c){ return '#' + c.map(function(v){ return ('0' + Math.round(v).toS
 function textOn(c){ return (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) > 150 ? '#000' : '#fff'; }
 function rng(seed){ return function(){ seed |= 0; seed = seed + 0x6D2B79F5 | 0; var t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
 
-// ---------- 把照片縮成 w×h 格,每格取區塊平均色 ----------
+// ---------- 取樣:每格切成 s×s 個小點,保留每個小點的顏色 ----------
 function sample(image, w, h){
-  var s = Math.max(1, Math.min(8, Math.floor(1600 / Math.max(w, h))));
+  var s = Math.max(3, Math.min(8, Math.floor(1800 / Math.max(w, h))));
   var c = document.createElement('canvas'); c.width = w * s; c.height = h * s;
   var x = c.getContext('2d'); x.imageSmoothingQuality = 'high';
   x.drawImage(image, 0, 0, c.width, c.height);
-  var d = x.getImageData(0, 0, c.width, c.height).data, cells = [];
-  for (var cy = 0; cy < h; cy++) for (var cx = 0; cx < w; cx++) {
-    var r = 0, g = 0, b = 0, a = 0;
-    for (var yy = 0; yy < s; yy++) for (var xx = 0; xx < s; xx++) {
-      var i = ((cy * s + yy) * c.width + cx * s + xx) * 4, al = d[i + 3];
-      r += d[i] * al; g += d[i + 1] * al; b += d[i + 2] * al; a += al;
-    }
-    var n = s * s;
-    cells.push(a / n < 128 ? null : [r / a, g / a, b / a]);   // 透明的格子不放豆子
-  }
-  return cells;
+  return { s: s, w: w, h: h, W: c.width, data: x.getImageData(0, 0, c.width, c.height).data };
 }
 
-// ---------- k-means(Lab 色彩空間)把顏色減到 k 色 ----------
-function quantize(cells, k){
-  var pts = [], idx = [];
-  cells.forEach(function(c, i){ if (c) { pts.push(rgbToLab(c[0], c[1], c[2])); idx.push(i); } });
-  if (!pts.length) return { palette: [], assign: cells.map(function(){ return -1; }) };
-  var uniq = {}; cells.forEach(function(c){ if (c) uniq[c.map(Math.round).join(',')] = 1; });
-  k = Math.min(k, Object.keys(uniq).length);
-  var rand = rng(20261007), cent = [pts[Math.floor(rand() * pts.length)]];
-  var dmin = pts.map(function(p){ return dist2(p, cent[0]); });
-  while (cent.length < k) {                     // k-means++ 選初始中心
-    var sum = dmin.reduce(function(a, b){ return a + b; }, 0), t = rand() * sum, j = 0;
-    while (j < pts.length - 1 && (t -= dmin[j]) > 0) j++;
-    cent.push(pts[j]);
-    for (var q = 0; q < pts.length; q++) dmin[q] = Math.min(dmin[q], dist2(pts[q], pts[j]));
+// ---------- 減色:先用 k-means 找出 k 個代表色,再讓每格取「小點裡出現最多」的顏色 ----------
+// 取最多而不是取平均,輪廓線和色塊交界才不會混成模糊的中間色
+function quantize(S, k){
+  var d = S.data, s = S.s, w = S.w, h = S.h, W = S.W, n = w * h;
+  // 1. 透明度:平均不到一半的格子不放豆子
+  var opaque = new Uint8Array(n);
+  for (var cy = 0; cy < h; cy++) for (var cx = 0; cx < w; cx++) {
+    var a = 0;
+    for (var yy = 0; yy < s; yy++) for (var xx = 0; xx < s; xx++) a += d[((cy * s + yy) * W + cx * s + xx) * 4 + 3];
+    opaque[cy * w + cx] = a / (s * s) >= 128 ? 1 : 0;
   }
-  var lab = new Array(pts.length);
-  for (var it = 0; it < 25; it++) {
+  // 2. 顏色直方圖(每色 5 bit),k-means 在直方圖上做,221 色也很快
+  var binOf = new Int32Array(d.length / 4).fill(-1), binIndex = new Map(), bins = [];
+  for (var cy2 = 0; cy2 < h; cy2++) for (var cx2 = 0; cx2 < w; cx2++) {
+    if (!opaque[cy2 * w + cx2]) continue;
+    for (var y2 = 0; y2 < s; y2++) for (var x2 = 0; x2 < s; x2++) {
+      var pi = (cy2 * s + y2) * W + cx2 * s + x2, i = pi * 4;
+      if (d[i + 3] < 128) continue;
+      var key = (d[i] >> 3) << 10 | (d[i + 1] >> 3) << 5 | (d[i + 2] >> 3), b = binIndex.get(key);
+      if (b === undefined) { b = bins.length; binIndex.set(key, b); bins.push([0, 0, 0, 0]); }
+      var B = bins[b]; B[0] += d[i]; B[1] += d[i + 1]; B[2] += d[i + 2]; B[3]++;
+      binOf[pi] = b;
+    }
+  }
+  var assign = new Array(n).fill(-1);
+  if (!bins.length) return { palette: [], assign: assign };
+  var rgb = bins.map(function(B){ return [B[0] / B[3], B[1] / B[3], B[2] / B[3]]; });
+  var lab = rgb.map(function(c){ return rgbToLab(c[0], c[1], c[2]); });
+  var wt = bins.map(function(B){ return B[3]; });
+  k = Math.min(k, bins.length);
+  // 3. k-means++(依小點數量加權)
+  var rand = rng(20261007), first = 0, best0 = -1;
+  wt.forEach(function(v, j){ if (v > best0) { best0 = v; first = j; } });
+  var cent = [lab[first].slice()], dmin = lab.map(function(p){ return dist2(p, cent[0]); });
+  while (cent.length < k) {
+    var sum = 0; for (var q = 0; q < lab.length; q++) sum += dmin[q] * wt[q];
+    if (sum <= 0) break;
+    var t = rand() * sum, j = 0;
+    while (j < lab.length - 1 && (t -= dmin[j] * wt[j]) > 0) j++;
+    cent.push(lab[j].slice());
+    for (var q2 = 0; q2 < lab.length; q2++) dmin[q2] = Math.min(dmin[q2], dist2(lab[q2], lab[j]));
+  }
+  var memb = new Int32Array(lab.length).fill(-1);
+  for (var it = 0; it < 30; it++) {
     var moved = false, acc = cent.map(function(){ return [0, 0, 0, 0]; });
-    for (var p = 0; p < pts.length; p++) {
-      var best = 0, bd = Infinity;
-      for (var c = 0; c < cent.length; c++) { var dd = dist2(pts[p], cent[c]); if (dd < bd) { bd = dd; best = c; } }
-      if (lab[p] !== best) { lab[p] = best; moved = true; }
-      var A = acc[best]; A[0] += pts[p][0]; A[1] += pts[p][1]; A[2] += pts[p][2]; A[3]++;
+    for (var p = 0; p < lab.length; p++) {
+      var bi = 0, bd = Infinity;
+      for (var c = 0; c < cent.length; c++) { var dd = dist2(lab[p], cent[c]); if (dd < bd) { bd = dd; bi = c; } }
+      if (memb[p] !== bi) { memb[p] = bi; moved = true; }
+      var A = acc[bi], ww = wt[p]; A[0] += lab[p][0] * ww; A[1] += lab[p][1] * ww; A[2] += lab[p][2] * ww; A[3] += ww;
     }
     cent = cent.map(function(c0, c){ var A = acc[c]; return A[3] ? [A[0] / A[3], A[1] / A[3], A[2] / A[3]] : c0; });
     if (!moved) break;
   }
-  // 每個顏色的實際 RGB 用該群原始顏色的平均,比 Lab 轉回來準
-  var rgbAcc = cent.map(function(){ return [0, 0, 0, 0]; }), assign = cells.map(function(){ return -1; });
-  for (var p2 = 0; p2 < pts.length; p2++) {
-    var cc = cells[idx[p2]], R = rgbAcc[lab[p2]];
-    R[0] += cc[0]; R[1] += cc[1]; R[2] += cc[2]; R[3]++;
-    assign[idx[p2]] = lab[p2];
+  // 4. 每個代表色的 RGB 用成員原始顏色的加權平均
+  var pal = cent.map(function(){ return [0, 0, 0, 0]; });
+  for (var p2 = 0; p2 < lab.length; p2++) { var P = pal[memb[p2]], B2 = bins[p2]; P[0] += B2[0]; P[1] += B2[1]; P[2] += B2[2]; P[3] += B2[3]; }
+  // 5. 每格投票:小點最多的代表色勝出
+  var votes = new Int32Array(cent.length), touched = [];
+  for (var cy3 = 0; cy3 < h; cy3++) for (var cx3 = 0; cx3 < w; cx3++) {
+    var cell = cy3 * w + cx3;
+    if (!opaque[cell]) continue;
+    for (var y3 = 0; y3 < s; y3++) for (var x3 = 0; x3 < s; x3++) {
+      var bb = binOf[(cy3 * s + y3) * W + cx3 * s + x3];
+      if (bb < 0) continue;
+      var m = memb[bb];
+      if (votes[m]++ === 0) touched.push(m);
+    }
+    var win = -1, wv = 0;
+    touched.forEach(function(m2){ if (votes[m2] > wv) { wv = votes[m2]; win = m2; } votes[m2] = 0; });
+    touched.length = 0;
+    assign[cell] = win;
   }
-  return { palette: rgbAcc.map(function(R){ return R[3] ? [R[0] / R[3], R[1] / R[3], R[2] / R[3]] : null; }), assign: assign };
+  return { palette: pal.map(function(P){ return P[3] ? [P[0] / P[3], P[1] / P[3], P[2] / P[3]] : null; }), assign: assign };
 }
 
 // ---------- 去背:和邊緣相連、且與四角主要顏色相同的格子變空白 ----------
@@ -193,7 +224,7 @@ function finalize(q){
 
 // ---------- 畫圖紙 ----------
 function draw(p, w, h, showNums){
-  var cell = Math.max(showNums ? 22 : 12, Math.min(40, Math.floor(2400 / Math.max(w, h))));
+  var cell = Math.max(showNums ? 22 : 12, Math.min(64, Math.floor(3200 / Math.max(w, h))));
   var m = Math.round(cell * 1.4);                       // 上方與左方留給座標數字
   var c = document.createElement('canvas'); c.width = m + w * cell + 2; c.height = m + h * cell + 2;
   var x = c.getContext('2d');
@@ -206,7 +237,8 @@ function draw(p, w, h, showNums){
     x.fillStyle = hex(col); x.fillRect(X, Y, cell, cell);
     if (showNums) {
       x.fillStyle = textOn(col);
-      x.font = '600 ' + Math.round(cell * (v + 1 >= 10 ? 0.42 : 0.5)) + 'px -apple-system, "Segoe UI", sans-serif';
+      var digits = String(v + 1).length;
+      x.font = '600 ' + Math.round(cell * (digits >= 3 ? 0.34 : digits === 2 ? 0.42 : 0.5)) + 'px -apple-system, "Segoe UI", sans-serif';
       x.fillText(String(v + 1), X + cell / 2, Y + cell / 2 + 1);
     }
   }
@@ -241,7 +273,9 @@ function syncFromH(){ var h = clampInt($('h').value); if (h && $('keep').checked
 $('w').addEventListener('input', syncFromW);
 $('h').addEventListener('input', syncFromH);
 $('keep').addEventListener('change', syncFromW);
-$('k').addEventListener('input', function(){ $('kv').textContent = this.value; });
+function colorCount(){ var v = parseInt($('kn').value, 10); v = isNaN(v) ? 12 : Math.max(2, Math.min(221, v)); $('kn').value = v; $('k').value = v; return v; }
+$('k').addEventListener('input', function(){ $('kn').value = this.value; });
+$('kn').addEventListener('change', function(){ colorCount(); generate(); });
 
 $('file').addEventListener('change', function(){
   var f = this.files[0]; if (!f) return;
@@ -263,8 +297,7 @@ function generate(){
   $('w').value = w; $('h').value = h;
   $('status').textContent = '產生中…';
   setTimeout(function(){
-    var cells = sample(img, w, h);
-    var q = quantize(cells, parseInt($('k').value, 10));
+    var q = quantize(sample(img, w, h), colorCount());
     if ($('bg').checked) removeBackground(q.assign, w, h);
     var p = finalize(q);
     var canvas = draw(p, w, h, $('nums').checked);
