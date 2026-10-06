@@ -28,7 +28,11 @@
   .pick{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:12px;padding:14px;border:1.5px dashed var(--border);
     border-radius:12px;font-weight:600;font-size:.95rem;color:var(--accent);cursor:pointer;}
   .pick.disabled{opacity:.4;pointer-events:none;}
-  .group-title{font-size:.85rem;font-weight:700;margin:14px 0 6px;}
+  .group-head{display:flex;align-items:center;gap:8px;margin:14px 0 6px;font-size:.85rem;font-weight:700;}
+  .group-head select{flex:1;width:auto;font-size:.9rem;font-weight:700;padding:7px 10px;}
+  .group-count{color:var(--ink-soft);font-weight:600;white-space:nowrap;}
+  .hint{font-size:.78rem;color:var(--ink-soft);margin-top:10px;line-height:1.5;}
+  .wide{width:100%;margin-top:8px;}
   .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;}
   .cell{position:relative;}
   .grid img{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:8px;border:1px solid var(--border);display:block;}
@@ -73,8 +77,10 @@
         <div class="status" id="newCatStatus"></div>
       </div>
       <label class="pick" id="pickLabel">📷 選擇照片加入這個分類<input type="file" id="files" accept="image/*" multiple hidden></label>
+      <div class="hint" id="queueHint" hidden>分類選錯了?點每組上方的分類名稱就能改。按 ✕ 可拿掉單張照片。</div>
       <div id="queue"></div>
       <button class="primary" id="uploadBtn" disabled>上傳</button>
+      <button class="secondary wide" id="cancelBtn" type="button" hidden>清除全部</button>
       <div class="status" id="status"></div>
     </div>
     <div class="foot"><a href="./">← 回圖庫</a><button class="link" id="resetToken">清除這支手機的權杖</button></div>
@@ -277,25 +283,34 @@ async function commitNewCategory(name, icon){
   var max = 0;
   s.data.forEach(function(c){ var m = /^c(\d+)_/.exec(c.slug); if (m) max = Math.max(max, parseInt(m[1], 10)); });
   var slug = 'c' + ('0' + (max + 1)).slice(-2) + '_' + name.replace(INVALID_CHARS, '');
-  s.data.push({ slug: slug, name: name, icon: icon || '📁', files: [] });
+  // 排在 pinLast(CINDY、TIMOTHY)前面,讓它們維持在最後
+  var at = s.data.findIndex(function(c){ return c.pinLast; });
+  s.data.splice(at < 0 ? s.data.length : at, 0, { slug: slug, name: name, icon: icon || '📁', files: [] });
   await writeState(s, [{ path: 'images/' + slug + '/.gitkeep', mode: '100644', type: 'blob', content: '' }], '手機新增分類:' + name);
   return slug;
 }
 
+// 按「取消上傳」只是做記號;在最後存成 commit 之前都會檢查,取消的話網站不會有任何變更
+var cancelRequested = false;
+function checkCancel(){ if (cancelRequested) { var e = new Error('cancelled'); e.cancelled = true; throw e; } }
+
 async function upload(){
   if (busy || !picked.length) return;
   busy = true;
+  cancelRequested = false;
   renderQueue();
   var st = $('status'), keepSlug = $('cat').value;
   try {
     var items = [];
     for (var i = 0; i < picked.length; i++) {
+      checkCancel();
       setStatus(st, '處理並上傳照片 ' + (i + 1) + ' / ' + picked.length + '…');
       var p = await prepare(picked[i].file);
       var o = await gh('/git/blobs', 'POST', { content: p.orig, encoding: 'base64' });
       var t = await gh('/git/blobs', 'POST', { content: p.thumb, encoding: 'base64' });
       items.push({ slug: picked[i].slug, orig: o.sha, thumb: t.sha });
     }
+    checkCancel();
     setStatus(st, '更新圖庫清單…');
     var results = await withRetry(st, function(){ return commitUploads(items); });
     var lines = results.map(function(r){ return r.cat.icon + ' ' + r.cat.name + ':' + r.names.length + ' 張'; });
@@ -305,12 +320,34 @@ async function upload(){
     await loadPhotos();
     $('cat').value = keepSlug;
   } catch (e) {
-    if (e.status === 401) { setStatus(st, '權杖無效或已過期,請重新設定。', 'err'); }
+    if (e.cancelled) { setStatus(st, '已取消上傳,網站沒有任何變更。照片仍在清單中,可以修改後再上傳。'); }
+    else if (e.status === 401) { setStatus(st, '權杖無效或已過期,請重新設定。', 'err'); }
     else { setStatus(st, '❌ 上傳失敗:' + e.message + '\n照片仍保留在清單中,可以再按一次上傳。', 'err'); }
   } finally {
     busy = false;
+    cancelRequested = false;
     renderQueue();
   }
+}
+
+function clearQueue(){
+  picked.forEach(function(p){ URL.revokeObjectURL(p.url); });
+  picked = [];
+  setStatus($('status'), '已清除清單。');
+  renderQueue();
+}
+
+// 分組標題上的分類選單:選錯分類時,把整組照片改到別的分類
+function categorySelect(current, onChange){
+  var sel = document.createElement('select');
+  (photos || []).forEach(function(c){
+    var o = document.createElement('option');
+    o.value = c.slug; o.textContent = c.icon + ' ' + c.name;
+    sel.appendChild(o);
+  });
+  sel.value = current;
+  sel.addEventListener('change', function(){ onChange(sel.value); });
+  return sel;
 }
 
 function catOf(slug){ return (photos || []).filter(function(c){ return c.slug === slug; })[0]; }
@@ -322,8 +359,21 @@ function renderQueue(){
   groupBySlug(picked.map(function(p, i){ return { slug: p.slug, p: p, i: i }; })).forEach(function(g){
     var cat = catOf(g.slug);
     var h = document.createElement('div');
-    h.className = 'group-title';
-    h.textContent = (cat ? cat.icon + ' ' + cat.name : g.slug) + '(' + g.items.length + ' 張)';
+    h.className = 'group-head';
+    if (busy) {
+      h.textContent = (cat ? cat.icon + ' ' + cat.name : g.slug);
+    } else {
+      h.appendChild(categorySelect(g.slug, function(to){
+        g.items.forEach(function(it){ it.p.slug = to; });
+        var c = catOf(to);
+        setStatus($('status'), '已把 ' + g.items.length + ' 張改到「' + (c ? c.name : to) + '」。');
+        renderQueue();
+      }));
+    }
+    var cnt = document.createElement('span');
+    cnt.className = 'group-count';
+    cnt.textContent = g.items.length + ' 張';
+    h.appendChild(cnt);
     box.appendChild(h);
     var grid = document.createElement('div');
     grid.className = 'grid';
@@ -353,6 +403,11 @@ function renderQueue(){
   $('uploadBtn').disabled = !n || busy;
   $('pickLabel').classList.toggle('disabled', busy);
   $('files').disabled = busy;
+  $('queueHint').hidden = !n || busy;
+  var cb = $('cancelBtn');
+  cb.hidden = !n && !busy;
+  cb.textContent = busy ? (cancelRequested ? '取消中…' : '取消上傳') : '清除全部';
+  cb.disabled = busy && cancelRequested;
 }
 
 $('files').addEventListener('change', function(){
@@ -366,6 +421,10 @@ $('files').addEventListener('change', function(){
   renderQueue();
 });
 $('uploadBtn').addEventListener('click', upload);
+$('cancelBtn').addEventListener('click', function(){
+  if (busy) { cancelRequested = true; setStatus($('status'), '正在取消…'); renderQueue(); }
+  else clearQueue();
+});
 
 $('newCatToggle').addEventListener('click', function(){
   var box = $('newCatBox');

@@ -1187,7 +1187,8 @@
    "c38_002.jpg",
    "c38_003.jpg",
    "c38_004.jpg"
-  ]
+  ],
+  "pwHash": "c93e703366dff58f1d6171c83a7049c667a57b16fe5fd9d720982bf882316323"
  },
  {
   "slug": "c39_庫洛魔法使",
@@ -1287,5 +1288,23 @@
    "c43_003.jpg",
    "c43_004.jpg"
   ]
+ },
+ {
+  "slug": "c44_CINDY",
+  "name": "CINDY",
+  "icon": "🔐",
+  "locked": true,
+  "pwHash": "8752f24ec0a8ac50ef732fbaa26f2df1cea32e477b8d4ad4160748155ed23054",
+  "pinLast": true,
+  "files": []
+ },
+ {
+  "slug": "c45_TIMOTHY",
+  "name": "TIMOTHY",
+  "icon": "🔐",
+  "locked": true,
+  "pwHash": "fe1ad13c3caa21676fb70219cf62632e266b34facd799da4d0eb2683e3005f3d",
+  "pinLast": true,
+  "files": []
  }
 ]

@@ -127,7 +127,9 @@ def main():
         if folder.name not in by_slug:
             name = CATEGORY_PREFIX.sub("", folder.name) or folder.name
             cat = {"slug": folder.name, "name": name, "icon": "📁", "files": []}
-            data.append(cat)
+            # 新分類排在 pinLast(CINDY、TIMOTHY)前面,讓它們維持在最後
+            pinned = [i for i, c in enumerate(data) if c.get("pinLast")]
+            data.insert(pinned[0] if pinned else len(data), cat)
             by_slug[folder.name] = cat
             log(f"新分類 {name}(圖示預設 📁,想換請到 photos.json 修改 icon)")
 
