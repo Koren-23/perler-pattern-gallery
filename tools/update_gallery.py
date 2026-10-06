@@ -1,7 +1,10 @@
 """同步相簿:掃描 images/,補縮圖,並更新 photos.json 與 index.html 內的 DATA。
 
-用法:把新圖放進 images/cXX/ 之後執行
+用法:把新圖放進 images/cXX_分類名/ 之後執行
     python tools/update_gallery.py
+檔名格式為「資料夾編號_流水號」,例如 c05_寶可夢/c05_001.jpg。
+把照片從別的分類搬進來(例如 c27_060.jpg 放進 c03_星星人/)會自動改成 c03_ 的下一個編號,
+原分類的清單與縮圖也會一併更新。
 加上 --dry-run 只列出會做的事,不實際修改;
 換掉同名原圖時加上 --rebuild-thumbs 重新產生所有縮圖。
 執行前會先 git pull 取得手機上傳的圖片(--no-pull 可略過)。
@@ -25,28 +28,43 @@ THUMB_BOX = (300, 300)
 THUMB_QUALITY = 80
 CONVERT_QUALITY = 92
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
-STANDARD_NAME = re.compile(r"^\d{3}\.jpg$")
 DATA_LINE = re.compile(r"^var DATA=.*;$", re.MULTILINE)
 CATEGORY_PREFIX = re.compile(r"^c\d+_")
+SLUG_PREFIX = re.compile(r"^(c\d+)_")
+# 任何分類的標準檔名(例如 c27_060.jpg);出現在別的資料夾代表是被搬過去的照片
+ANY_STANDARD = re.compile(r"^c\d+_\d{3}\.jpg$")
 
 
-def next_number(folder):
-    nums = [int(p.stem) for p in folder.glob("*.jpg") if STANDARD_NAME.match(p.name)]
+def prefix_of(slug):
+    """檔名前綴 = 資料夾的編號,例如 c05_寶可夢 -> c05"""
+    m = SLUG_PREFIX.match(slug)
+    return m.group(1) if m else slug
+
+
+def standard_name(prefix):
+    return re.compile(rf"^{re.escape(prefix)}_(\d{{3}})\.jpg$")
+
+
+def next_number(folder, std):
+    nums = [int(m.group(1)) for p in folder.iterdir() if p.is_file() and (m := std.match(p.name))]
     return max(nums, default=0) + 1
 
 
-def normalize_names(folder, dry_run, log):
-    """把非 NNN.jpg 的新圖改名(必要時轉成 jpg),接在現有編號後面。"""
+def plan_renames(folder, prefix, std):
+    """不符合本資料夾檔名格式的圖(新圖、或從別的分類搬來的),依序接在現有編號後面。"""
     others = sorted(
         p for p in folder.iterdir()
-        if p.is_file() and p.suffix.lower() in IMAGE_EXTS and not STANDARD_NAME.match(p.name)
+        if p.is_file() and p.suffix.lower() in IMAGE_EXTS and not std.match(p.name)
     )
-    n = next_number(folder)
-    for src in others:
-        dst = folder / f"{n:03d}.jpg"
-        n += 1
+    n = next_number(folder, std)
+    return [(src, folder / f"{prefix}_{n + i:03d}.jpg") for i, src in enumerate(others)]
+
+
+def apply_renames(plan, dry_run, log):
+    for src, dst in plan:
         if src.suffix.lower() in (".jpg", ".jpeg"):
-            log(f"  改名 {src.name} -> {dst.name}")
+            verb = "搬入" if ANY_STANDARD.match(src.name) else "改名"
+            log(f"  {verb} {src.name} -> {dst.name}")
             if not dry_run:
                 src.rename(dst)
         else:
@@ -123,25 +141,23 @@ def main():
                 cat["files"] = []
             continue
 
-        normalize_names(folder, dry, log)
+        prefix = prefix_of(cat["slug"])
+        std = standard_name(prefix)
+        plan = plan_renames(folder, prefix, std)
+        apply_renames(plan, dry, log)
 
+        files = {p.name for p in folder.iterdir() if p.is_file() and std.match(p.name)}
         if dry:
             # dry-run 時檔案沒真的改名,用預期的結果來計算
-            existing = {p.name for p in folder.glob("*.jpg") if STANDARD_NAME.match(p.name)}
-            n = next_number(folder)
-            extra = [p for p in folder.iterdir()
-                     if p.is_file() and p.suffix.lower() in IMAGE_EXTS and not STANDARD_NAME.match(p.name)]
-            existing |= {f"{n + i:03d}.jpg" for i in range(len(extra))}
-            files = sorted(existing)
-        else:
-            files = sorted(p.name for p in folder.glob("*.jpg") if STANDARD_NAME.match(p.name))
+            files |= {dst.name for _, dst in plan}
+        files = sorted(files)
 
         new = [f for f in files if f not in cat["files"]]
         gone = [f for f in cat["files"] if f not in files]
         if new:
             log(f"[{cat['name']}] 新增 {len(new)} 張:{', '.join(new)}")
         if gone:
-            log(f"[{cat['name']}] 原圖已刪除,移出清單:{', '.join(gone)}")
+            log(f"[{cat['name']}] 原圖已刪除或移走,移出清單:{', '.join(gone)}")
         added += len(new)
         removed += len(gone)
         cat["files"] = files
@@ -153,12 +169,14 @@ def main():
                 thumbs_made += 1
                 if not dry:
                     make_thumb(src, dst)
-        for fn in gone:
-            t = thumb_dir / fn
-            if t.exists():
-                log(f"  刪除多餘縮圖 {t.relative_to(ROOT)}")
-                if not dry:
-                    t.unlink()
+        # 縮圖都是工具產生的,清單以外的(原圖被刪或搬走)一律清掉
+        if thumb_dir.is_dir():
+            keep = set(files)
+            for t in sorted(thumb_dir.iterdir()):
+                if t.is_file() and t.name not in keep:
+                    log(f"  刪除多餘縮圖 {t.relative_to(ROOT)}")
+                    if not dry:
+                        t.unlink()
 
     if not dry:
         PHOTOS_JSON.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n")

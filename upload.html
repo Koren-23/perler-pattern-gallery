@@ -85,7 +85,6 @@ var OWNER = 'Koren-23', REPO = 'perler-pattern-gallery', BRANCH = 'main';
 var API = 'https://api.github.com/repos/' + OWNER + '/' + REPO;
 // 與 tools/update_gallery.py 相同的規格
 var THUMB_BOX = 300, THUMB_Q = 0.8, MAX_SIDE = 2560, ORIG_Q = 0.9;
-var STANDARD_NAME = /^\d{3}\.jpg$/;
 var DATA_LINE = /^var DATA=.*;$/m;
 
 var $ = function(id){ return document.getElementById(id); };
@@ -144,9 +143,13 @@ function pyIndent(v, ind){
   return JSON.stringify(v);
 }
 
-function nextNumber(files){
+// 檔名格式「資料夾編號_流水號.jpg」,例如 c05_寶可夢 裡的 c05_001.jpg
+function prefixOf(slug){ var m = /^(c\d+)_/.exec(slug); return m ? m[1] : slug; }
+function numberOf(name){ var m = /_(\d{3})\.jpg$/.exec(name); return m ? m[1] : name; }
+function nextNumber(files, prefix){
+  var std = new RegExp('^' + prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '_(\\d{3})\\.jpg$');
   var max = 0;
-  files.forEach(function(f){ if (STANDARD_NAME.test(f)) max = Math.max(max, parseInt(f, 10)); });
+  files.forEach(function(f){ var m = std.exec(f); if (m) max = Math.max(max, parseInt(m[1], 10)); });
   return max + 1;
 }
 function pad3(n){ return ('00' + n).slice(-3); }
@@ -249,9 +252,9 @@ async function commitUploads(items){
   groupBySlug(items).forEach(function(g){
     var cat = s.data.filter(function(c){ return c.slug === g.slug; })[0];
     if (!cat) throw new Error('找不到分類 ' + g.slug + ',可能已被改名,請重新整理頁面');
-    var n = nextNumber(cat.files), names = [];
+    var prefix = prefixOf(g.slug), n = nextNumber(cat.files, prefix), names = [];
     g.items.forEach(function(b, i){
-      var name = pad3(n + i) + '.jpg';
+      var name = prefix + '_' + pad3(n + i) + '.jpg';
       names.push(name);
       tree.push({ path: 'images/' + g.slug + '/' + name, mode: '100644', type: 'blob', sha: b.orig });
       tree.push({ path: 'thumbs/' + g.slug + '/' + name, mode: '100644', type: 'blob', sha: b.thumb });
@@ -260,7 +263,7 @@ async function commitUploads(items){
     results.push({ cat: cat, names: names });
   });
 
-  var label = function(names){ return names.length === 1 ? names[0].slice(0, 3) : names[0].slice(0, 3) + '-' + names[names.length - 1].slice(0, 3); };
+  var label = function(names){ var a = numberOf(names[0]), b = numberOf(names[names.length - 1]); return a === b ? a : a + '-' + b; };
   var msg = '手機上傳:' + results.map(function(r){ return r.cat.name + ' ' + label(r.names); }).join('、');
   await writeState(s, tree, msg);
   return results;

@@ -1,11 +1,11 @@
 # 拼豆圖庫
 
-拼豆圖紙參考圖的分類相簿(37 個分類、926 張)。純靜態網頁,不需要後端。
+拼豆圖紙參考圖的分類相簿(39 個分類、988 張)。純靜態網頁,不需要後端。
 
 ## 結構
 - `index.html` 網頁本體(分類、縮圖、放大檢視)
-- `images/cXX_分類名/NNN.jpg` 原圖(例如 `images/c01_蛋仔/001.jpg`)
-- `thumbs/cXX_分類名/NNN.jpg` 縮圖
+- `images/cXX_分類名/cXX_NNN.jpg` 原圖(例如 `images/c01_蛋仔/c01_001.jpg`,檔名前綴 = 資料夾編號)
+- `thumbs/cXX_分類名/cXX_NNN.jpg` 縮圖
 - `photos.json` 分類與檔案清單(index.html 內已內嵌同一份資料)
 - `tools/update_gallery.py` 同步工具(補縮圖、更新清單)
 
@@ -16,7 +16,7 @@
 1. 把原圖放進 `images/cXX_分類名/`(檔名、格式不拘,jpg/png/webp 皆可)
 2. 雙擊 `update_gallery.bat`(或執行 `python tools/update_gallery.py`),它會:
    - 先從 GitHub 取得最新內容(包含手機上傳的圖片),避免編號衝突
-   - 把新圖改名為接續的編號 `NNN.jpg`(非 jpg 會轉成 jpg)
+   - 把新圖改名為接續的編號 `cXX_NNN.jpg`(非 jpg 會轉成 jpg)
    - 產生對應縮圖到 `thumbs/cXX_分類名/`
    - 更新 `photos.json` 與 `index.html` 內的 `DATA`
    - 原圖被刪除的話,一併移出清單並刪除縮圖
@@ -27,6 +27,8 @@
 - 新增分類:在 `images/` 建一個新資料夾,命名為「接續編號_分類名」(例如 `c30_小熊`),執行工具後分類名稱會自動取底線後的文字;圖示預設 📁,想換可到 `photos.json` 修改 `icon` 後再執行一次工具。新分類會排在最後,想調整順序可在 `photos.json` 移動該分類的位置
 - 密碼分類:在 `photos.json` 該分類加上 `"locked": true`,點開時需輸入密碼(網頁只存密碼的 SHA-256,改密碼要更新 `index.html` 的 `PW_HASH`)。注意這只是網頁上的門檻,圖片本身仍公開在 repo 中
 - 分類頁加參考連結:在 `photos.json` 該分類加上 `"links": [{"name": "顯示名稱", "url": "網址"}]`,再執行一次工具
+- 搬移照片到別的分類:直接把原圖(例如 `c27_060.jpg`)從一個資料夾拖到另一個,再執行工具。因為檔名帶有資料夾編號,不會覆蓋到目的地的照片;工具會把它改成目的地的下一個編號,並更新兩邊的清單與縮圖。只需搬 `images/` 裡的原圖,`thumbs/` 不用動
+- 首頁分類圖示會用該分類第一張照片;沒有照片、密碼分類,或在 `photos.json` 標了 `"emojiIcon": true` 的分類(目前是「其他」)則顯示 `icon` 表情符號
 - 已有的分類想改名時,資料夾名稱與 `photos.json` 的 `slug`、`name` 要一起改
 - 需要 Python 3 與 Pillow(`pip install pillow`)
 
