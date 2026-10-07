@@ -10,6 +10,7 @@
     --border:#e6e6e3; --accent:#2563eb; --accent-ink:#ffffff;
   }
   *{box-sizing:border-box;}
+  [hidden]{display:none !important;}   /* 有 display 樣式的元素也要能被 hidden 藏起來 */
   html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;}
   .app{max-width:780px;margin:0 auto;padding:14px 16px 40px;}
@@ -34,7 +35,18 @@
   .seg button+button{border-left:1px solid var(--border);}
   .seg button.on{background:var(--accent);color:var(--accent-ink);font-weight:700;}
   .link{background:none;border:none;color:var(--accent);font-size:.8rem;cursor:pointer;padding:4px;text-decoration:underline;}
-  .preview.tapping{cursor:crosshair;outline:3px solid var(--accent);outline-offset:2px;}
+  .preview.tapping{cursor:crosshair;outline:3px solid var(--accent);outline-offset:-3px;}
+  .pv-wrap{position:relative;width:fit-content;max-width:100%;margin:12px auto 0;overflow:hidden;border-radius:8px;}
+  .pv-wrap .preview{margin:0;}
+  .crop-box{position:absolute;border:2px solid #fff;box-shadow:0 0 0 9999px rgba(0,0,0,.5);touch-action:none;cursor:move;
+    background-image:linear-gradient(rgba(255,255,255,.35) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.35) 1px,transparent 1px);
+    background-size:33.33% 33.33%;}
+  .crop-box .h{position:absolute;width:26px;height:26px;margin:-13px;border-radius:50%;background:#fff;border:2px solid var(--accent);touch-action:none;}
+  .crop-box .h[data-h=nw]{left:0;top:0;cursor:nwse-resize;} .crop-box .h[data-h=ne]{left:100%;top:0;cursor:nesw-resize;}
+  .crop-box .h[data-h=sw]{left:0;top:100%;cursor:nesw-resize;} .crop-box .h[data-h=se]{left:100%;top:100%;cursor:nwse-resize;}
+  .cropbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:8px;margin-top:8px;}
+  .small{width:auto;margin:0;padding:8px 14px;font-size:.85rem;}
+  .center{text-align:center;width:100%;margin:2px 0 0;}
   .row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px;}
   label.field{display:block;font-size:.8rem;font-weight:600;}
   label.field input[type=number]{display:block;width:100%;margin-top:6px;font-size:1rem;padding:9px 10px;border:1px solid var(--border);border-radius:10px;}
@@ -69,7 +81,25 @@
 
   <div class="card">
     <label class="pick">📷 選擇照片<input type="file" id="file" accept="image/*" hidden></label>
-    <canvas class="preview" id="preview" hidden></canvas>
+    <div class="pv-wrap" id="pvWrap" hidden>
+      <canvas class="preview" id="preview"></canvas>
+      <div class="crop-box" id="cropBox" hidden>
+        <span class="h" data-h="nw"></span><span class="h" data-h="ne"></span><span class="h" data-h="sw"></span><span class="h" data-h="se"></span>
+      </div>
+    </div>
+    <div class="cropbar" id="cropbar" hidden>
+      <button type="button" class="secondary small" id="cropBtn">✂️ 裁切</button>
+      <button type="button" class="link" id="uncrop" hidden>還原成整張照片</button>
+    </div>
+    <div class="cropbar" id="cropTools" hidden>
+      <div class="seg" id="cropRatio">
+        <button type="button" data-r="free" class="on">自由</button>
+        <button type="button" data-r="1">1:1 正方形</button>
+      </div>
+      <button type="button" class="secondary small" id="cropCancel">取消</button>
+      <button type="button" class="primary small" id="cropDone">完成裁切</button>
+      <p class="sub center">拖曳四個角調整大小,拖曳中間移動位置</p>
+    </div>
     <div class="tapbar" id="tapbar" hidden>
       <span>點預覽圖:</span>
       <div class="seg" role="radiogroup">
@@ -120,6 +150,7 @@
 <script>
 var $ = function(id){ return document.getElementById(id); };
 var img = null, ratio = 1, lastPng = null;
+var crop = null, cropping = false, note = '';   // note = 產生圖紙後要顯示的提醒   // crop = 照片上的裁切範圍(0–1 的比例);cropping = 正在調整裁切框
 
 // ---------- 顏色工具 ----------
 function srgbToLinear(c){ c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
@@ -142,13 +173,23 @@ function adjustments(){
   return { bri: +$('bri').value, con: +$('con').value, sat: +$('sat').value, bg: $('bg').checked, tol: +$('tol').value,
     edge: $('edge').checked, taps: taps.slice() };
 }
+// 要用的照片範圍(像素)。full = true 時忽略裁切(調整裁切框時預覽要看整張)
+function srcRect(full){
+  var nw = img.naturalWidth, nh = img.naturalHeight;
+  if (!crop || full) return { sx: 0, sy: 0, sw: nw, sh: nh };
+  return { sx: crop.x * nw, sy: crop.y * nh, sw: Math.max(1, crop.w * nw), sh: Math.max(1, crop.h * nh) };
+}
+function drawSrc(x, image, W, H, full){
+  var r = srcRect(full);
+  x.drawImage(image, r.sx, r.sy, r.sw, r.sh, 0, 0, W, H);
+}
 function renderAdjusted(image, W, H, a){
   var c = document.createElement('canvas'); c.width = W; c.height = H;
   var x = c.getContext('2d'); x.imageSmoothingQuality = 'high';
-  x.drawImage(image, 0, 0, W, H);
+  drawSrc(x, image, W, H, a.full);
   var id = x.getImageData(0, 0, W, H);
   applyTone(id.data, a);
-  removeBackground(id.data, W, H, a);
+  if (!a.full) removeBackground(id.data, W, H, a);   // 調整裁切框時只看原圖,不去背
   x.putImageData(id, 0, 0);
   return { canvas: c, data: id.data };
 }
@@ -256,7 +297,7 @@ function removeBackground(d, W, H, a){
 function renderOriginal(out, W, H, a){
   var c = document.createElement('canvas'); c.width = W; c.height = H;
   var x = c.getContext('2d'); x.imageSmoothingQuality = 'high';
-  x.drawImage(img, 0, 0, W, H);
+  drawSrc(x, img, W, H, false);
   var id = x.getImageData(0, 0, W, H);
   applyTone(id.data, a);
   out.set(id.data);
@@ -278,7 +319,7 @@ Array.prototype.forEach.call(document.querySelectorAll('.seg button'), function(
   b.addEventListener('click', function(){ setTapMode(b.dataset.mode); });
 });
 $('preview').addEventListener('click', function(e){
-  if (tapMode === 'off' || !img) return;
+  if (tapMode === 'off' || !img || cropping) return;
   var r = this.getBoundingClientRect();
   taps.push({ x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height, mode: tapMode });
   syncTapUi(); updatePreview(); regenSoon();
@@ -293,13 +334,98 @@ function updatePreview(){
   previewQueued = true;
   requestAnimationFrame(function(){
     previewQueued = false;
-    var sc = Math.min(1, 640 / img.naturalWidth, 520 / img.naturalHeight);
-    var W = Math.max(1, Math.round(img.naturalWidth * sc)), H = Math.max(1, Math.round(img.naturalHeight * sc));
-    var r = renderAdjusted(img, W, H, adjustments()), pv = $('preview');
+    var src = srcRect(cropping), sc = Math.min(1, 640 / src.sw, 520 / src.sh);
+    var W = Math.max(1, Math.round(src.sw * sc)), H = Math.max(1, Math.round(src.sh * sc));
+    var a = adjustments(); a.full = cropping;
+    var r = renderAdjusted(img, W, H, a), pv = $('preview');
     pv.width = W; pv.height = H; pv.getContext('2d').drawImage(r.canvas, 0, 0);
-    pv.hidden = false; $('tapbar').hidden = false;
+    $('pvWrap').hidden = false;
+    $('tapbar').hidden = cropping; $('cropbar').hidden = cropping; $('cropTools').hidden = !cropping;
+    $('uncrop').hidden = !crop;
+    if (cropping) layoutCropBox();
   });
 }
+
+// ---------- 裁切 ----------
+var box = null, cropAspect = 'free';      // box = 正在調整的裁切框(0–1 比例,相對整張照片)
+function layoutCropBox(){
+  var el = $('cropBox');
+  el.style.left = box.x * 100 + '%'; el.style.top = box.y * 100 + '%';
+  el.style.width = box.w * 100 + '%'; el.style.height = box.h * 100 + '%';
+  el.hidden = false;
+}
+// 1:1 時,框的寬高在「像素」上要一樣,換算成比例要乘上照片的長寬比
+function squareH(w){ return w * img.naturalWidth / img.naturalHeight; }
+function fitSquare(){
+  if (cropAspect !== '1') return;
+  var cx = box.x + box.w / 2, cy = box.y + box.h / 2, w = Math.min(box.w, box.h / squareH(1));
+  w = Math.min(w, 1, 1 / squareH(1)); var h = squareH(w);
+  box = { x: Math.min(Math.max(0, cx - w / 2), 1 - w), y: Math.min(Math.max(0, cy - h / 2), 1 - h), w: w, h: h };
+}
+function startCrop(){
+  cropping = true; setTapMode('off');
+  box = crop ? Object.assign({}, crop) : { x: 0.05, y: 0.05, w: 0.9, h: 0.9 };
+  fitSquare(); updatePreview();
+}
+function endCrop(apply){
+  cropping = false; $('cropBox').hidden = true;
+  if (apply) {
+    var changed = !crop || ['x', 'y', 'w', 'h'].some(function(k){ return Math.abs(crop[k] - box[k]) > 1e-4; });
+    var full = box.x < 0.002 && box.y < 0.002 && box.w > 0.996 && box.h > 0.996;
+    crop = full ? null : box;
+    if (changed && taps.length) { taps = []; syncTapUi(); note = '已裁切。之前在預覽圖上點的去背/保留位置已清除,需要的話請重新點。'; }
+    ratio = srcRect().sh / srcRect().sw; syncFromW();
+    regenSoon();
+  }
+  updatePreview();
+}
+$('cropBtn').addEventListener('click', startCrop);
+$('cropCancel').addEventListener('click', function(){ endCrop(false); });
+$('cropDone').addEventListener('click', function(){ endCrop(true); });
+$('uncrop').addEventListener('click', function(){
+  crop = null; if (taps.length) { taps = []; syncTapUi(); }
+  ratio = img.naturalHeight / img.naturalWidth; syncFromW(); updatePreview(); regenSoon();
+});
+Array.prototype.forEach.call(document.querySelectorAll('#cropRatio button'), function(b){
+  b.addEventListener('click', function(){
+    cropAspect = b.dataset.r;
+    Array.prototype.forEach.call(document.querySelectorAll('#cropRatio button'), function(o){ o.classList.toggle('on', o === b); });
+    fitSquare(); layoutCropBox();
+  });
+});
+// 拖曳:角 = 改大小,中間 = 移動。用 pointer events,手指和滑鼠都可以
+(function(){
+  var drag = null, MIN = 0.06;
+  $('cropBox').addEventListener('pointerdown', function(e){
+    var r = $('pvWrap').getBoundingClientRect();
+    drag = { handle: e.target.dataset.h || 'move', sx: e.clientX, sy: e.clientY, W: r.width, H: r.height, b: Object.assign({}, box) };
+    this.setPointerCapture(e.pointerId); e.preventDefault();
+  });
+  $('cropBox').addEventListener('pointermove', function(e){
+    if (!drag) return;
+    var dx = (e.clientX - drag.sx) / drag.W, dy = (e.clientY - drag.sy) / drag.H, b = drag.b, n;
+    if (drag.handle === 'move') {
+      n = { x: Math.min(Math.max(0, b.x + dx), 1 - b.w), y: Math.min(Math.max(0, b.y + dy), 1 - b.h), w: b.w, h: b.h };
+    } else {
+      var L = b.x, T = b.y, R = b.x + b.w, B = b.y + b.h, hd = drag.handle;
+      if (hd.indexOf('w') >= 0) L = Math.min(Math.max(0, L + dx), R - MIN);
+      if (hd.indexOf('e') >= 0) R = Math.max(Math.min(1, R + dx), L + MIN);
+      if (hd.indexOf('n') >= 0) T = Math.min(Math.max(0, T + dy), B - MIN);
+      if (hd.indexOf('s') >= 0) B = Math.max(Math.min(1, B + dy), T + MIN);
+      if (cropAspect === '1') {                      // 正方形:以寬為準,高度跟著算,從固定的那個角延伸
+        var w = R - L, h = squareH(w);
+        if (hd.indexOf('n') >= 0) { T = B - h; if (T < 0) { T = 0; h = B; w = h / squareH(1); } }
+        else { B = T + h; if (B > 1) { B = 1; h = 1 - T; w = h / squareH(1); } }
+        if (hd.indexOf('w') >= 0) L = R - w; else R = L + w;
+      }
+      n = { x: L, y: T, w: R - L, h: B - T };
+    }
+    box = n; layoutCropBox();
+  });
+  function stop(){ drag = null; }
+  $('cropBox').addEventListener('pointerup', stop);
+  $('cropBox').addEventListener('pointercancel', stop);
+})();
 
 // ---------- 取樣:每格切成 s×s 個小點,保留每個小點的顏色 ----------
 function sample(image, w, h){
@@ -458,6 +584,7 @@ $('file').addEventListener('change', function(){
   im.onload = function(){
     img = im; ratio = im.naturalHeight / im.naturalWidth;
     taps = []; syncTapUi(); setTapMode('off');
+    crop = null; cropping = false; $('cropBox').hidden = true;
     updatePreview();
     syncFromW(); $('go').disabled = false; $('status').textContent = '';
     generate();
@@ -482,7 +609,7 @@ function generate(){
     $('summary').textContent = w + ' × ' + h + ' 格,' + p.colors.length + ' 色,共需 ' + total + ' 顆';
     renderLegend(p);
     $('result').hidden = false;
-    $('status').textContent = '';
+    $('status').textContent = note; note = '';
     window.LAST_PATTERN = { w: w, h: h, colors: p.colors.length, total: total, empty: p.grid.filter(function(v){ return v < 0; }).length, grid: p.grid };
   }, 20);
 }
