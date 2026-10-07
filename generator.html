@@ -27,7 +27,14 @@
   .adjust summary{font-size:.88rem;font-weight:700;cursor:pointer;}
   .val{font-weight:400;color:var(--ink-soft);margin-left:4px;}
   .sub{display:block;font-weight:400;font-size:.74rem;color:var(--ink-soft);margin-top:2px;}
-  #tolBox.off{opacity:.4;pointer-events:none;}
+  #edgeBox.off{opacity:.4;pointer-events:none;}
+  .tapbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;justify-content:center;margin-top:8px;font-size:.8rem;}
+  .seg{display:inline-flex;border:1px solid var(--border);border-radius:10px;overflow:hidden;}
+  .seg button{border:none;background:var(--panel);padding:7px 10px;font-size:.8rem;cursor:pointer;color:var(--ink);}
+  .seg button+button{border-left:1px solid var(--border);}
+  .seg button.on{background:var(--accent);color:var(--accent-ink);font-weight:700;}
+  .link{background:none;border:none;color:var(--accent);font-size:.8rem;cursor:pointer;padding:4px;text-decoration:underline;}
+  .preview.tapping{cursor:crosshair;outline:3px solid var(--accent);outline-offset:2px;}
   .row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px;}
   label.field{display:block;font-size:.8rem;font-weight:600;}
   label.field input[type=number]{display:block;width:100%;margin-top:6px;font-size:1rem;padding:9px 10px;border:1px solid var(--border);border-radius:10px;}
@@ -63,6 +70,16 @@
   <div class="card">
     <label class="pick">📷 選擇照片<input type="file" id="file" accept="image/*" hidden></label>
     <canvas class="preview" id="preview" hidden></canvas>
+    <div class="tapbar" id="tapbar" hidden>
+      <span>點預覽圖:</span>
+      <div class="seg" role="radiogroup">
+        <button type="button" data-mode="off" class="on">不動作</button>
+        <button type="button" data-mode="erase">🧽 點一下去背</button>
+        <button type="button" data-mode="keep">🖌️ 點一下保留</button>
+      </div>
+      <button type="button" class="link" id="undoTap" hidden>復原上一步</button>
+      <button type="button" class="link" id="clearTap" hidden>清除點選</button>
+    </div>
     <div class="row">
       <label class="field">寬(顆)<input type="number" id="w" value="29" min="5" max="150" inputmode="numeric"></label>
       <label class="field">高(顆)<input type="number" id="h" value="29" min="5" max="150" inputmode="numeric"></label>
@@ -75,9 +92,11 @@
       <label class="field slider">亮度 <span class="val" id="briV">0</span><input type="range" id="bri" min="-100" max="100" value="0"></label>
       <label class="field slider">對比 <span class="val" id="conV">0</span><input type="range" id="con" min="-100" max="100" value="0"></label>
       <label class="field slider">飽和度 <span class="val" id="satV">0</span><input type="range" id="sat" min="-100" max="100" value="0"></label>
-      <label class="check"><input type="checkbox" id="bg">去背(從照片邊緣把背景色清掉,變成不放豆子)</label>
-      <label class="field slider" id="tolBox">去背強度 <span class="val" id="tolV">30</span><input type="range" id="tol" min="1" max="100" value="30">
-        <span class="sub">背景沒去乾淨就調高;主角被吃掉就調低</span></label>
+      <label class="check"><input type="checkbox" id="bg">自動去背(從照片邊緣把背景清掉,變成不放豆子)</label>
+      <label class="field slider">去背強度 <span class="val" id="tolV">30</span><input type="range" id="tol" min="1" max="100" value="30">
+        <span class="sub">背景沒去乾淨就調高;主角被吃掉就調低。也用在「點一下去背/保留」</span></label>
+      <label class="check" id="edgeBox"><input type="checkbox" id="edge" checked>清除主角周圍的淡色殘邊</label>
+      <p class="sub">夾在手臂、把手中間等沒有連到邊緣的背景,或自動去背清不掉的地方:在上方選「點一下去背」再點預覽圖。被誤刪的地方選「點一下保留」點回來。</p>
       <button class="secondary" id="reset" type="button">重設調整</button>
     </details>
     <button class="primary" id="go" disabled>產生圖紙</button>
@@ -120,7 +139,8 @@ function rng(seed){ return function(){ seed |= 0; seed = seed + 0x6D2B79F5 | 0; 
 
 // ---------- 照片調整:亮度、對比、飽和度、去背(在照片本身處理,再轉成圖紙) ----------
 function adjustments(){
-  return { bri: +$('bri').value, con: +$('con').value, sat: +$('sat').value, bg: $('bg').checked, tol: +$('tol').value };
+  return { bri: +$('bri').value, con: +$('con').value, sat: +$('sat').value, bg: $('bg').checked, tol: +$('tol').value,
+    edge: $('edge').checked, taps: taps.slice() };
 }
 function renderAdjusted(image, W, H, a){
   var c = document.createElement('canvas'); c.width = W; c.height = H;
@@ -128,7 +148,7 @@ function renderAdjusted(image, W, H, a){
   x.drawImage(image, 0, 0, W, H);
   var id = x.getImageData(0, 0, W, H);
   applyTone(id.data, a);
-  if (a.bg) removeBg(id.data, W, H, a.tol);
+  removeBackground(id.data, W, H, a);
   x.putImageData(id, 0, 0);
   return { canvas: c, data: id.data };
 }
@@ -143,38 +163,128 @@ function applyTone(d, a){
     d[i] = r; d[i + 1] = g; d[i + 2] = b;   // Uint8ClampedArray 會自動限制在 0–255
   }
 }
-// 以邊緣最常見的顏色當背景色,從四邊往內把「和背景色相近、而且連在一起」的點變透明
-function removeBg(d, W, H, tol){
-  var bins = new Map(), best = -1, bestN = 0;
+// ---------- 去背 ----------
+// 顏色差距:加權 RGB(綠色最敏感),0 = 一樣,約 255 = 黑白之差
+function cdist(d, i, c){
+  var dr = d[i] - c[0], dg = d[i + 1] - c[1], db = d[i + 2] - c[2];
+  return Math.sqrt(dr * dr * 0.3 + dg * dg * 0.59 + db * db * 0.11);
+}
+function cdistPix(d, i, j){
+  var dr = d[i] - d[j], dg = d[i + 1] - d[j + 1], db = d[i + 2] - d[j + 2];
+  return Math.sqrt(dr * dr * 0.3 + dg * dg * 0.59 + db * db * 0.11);
+}
+// 從 seeds 開始往外擴散(魔術棒)。一個點會被當成背景,如果:
+//  - 和任一參考背景色夠接近(強度 T),或
+//  - 和旁邊已經是背景的點非常接近、且和參考色不會差太遠(陰影、漸層背景靠這條)
+// 輪廓線、主角的顏色和背景差很多,擴散就會停在那裡
+function wand(d, W, H, seeds, refs, T, mark){
+  var near = function(i){ for (var r = 0; r < refs.length; r++) if (cdist(d, i, refs[r]) <= T) return 0; var m = Infinity; for (var r2 = 0; r2 < refs.length; r2++) m = Math.min(m, cdist(d, i, refs[r2])); return m; };
+  var step = Math.min(14, Math.max(5, T * 0.45)), far = T + 45, stack = [];   // 漸層延伸有固定上限,強度調高也不會穿過輪廓線
+  function ok(q, from){
+    if (mark[q]) return false;
+    var i = q * 4;
+    if (d[i + 3] < 128) return true;                       // 本來就透明
+    var m = near(i);
+    if (m === 0) return true;
+    return from >= 0 && m <= far && cdistPix(d, i, from * 4) <= step;
+  }
+  seeds.forEach(function(q){ if (ok(q, -1)) { mark[q] = 1; stack.push(q); } });
+  while (stack.length) {
+    var p = stack.pop(), px = p % W, nb = [px > 0 ? p - 1 : -1, px < W - 1 ? p + 1 : -1, p >= W ? p - W : -1, p < W * (H - 1) ? p + W : -1];
+    for (var k = 0; k < 4; k++) { var q = nb[k]; if (q >= 0 && ok(q, p)) { mark[q] = 1; stack.push(q); } }
+  }
+}
+// 邊緣出現最多的幾種顏色都當成背景色(最多 4 種,每種至少占邊緣的 8%)
+function borderColors(d, W, H){
+  var bins = new Map(), total = 0;
   function look(p){
     var i = p * 4; if (d[i + 3] < 128) return;
     var key = (d[i] >> 4) << 8 | (d[i + 1] >> 4) << 4 | (d[i + 2] >> 4), e = bins.get(key);
     if (!e) { e = [0, 0, 0, 0]; bins.set(key, e); }
-    e[0] += d[i]; e[1] += d[i + 1]; e[2] += d[i + 2]; e[3]++;
-    if (e[3] > bestN) { bestN = e[3]; best = key; }
+    e[0] += d[i]; e[1] += d[i + 1]; e[2] += d[i + 2]; e[3]++; total++;
   }
   for (var x0 = 0; x0 < W; x0++) { look(x0); look((H - 1) * W + x0); }
-  for (var y0 = 0; y0 < H; y0++) { look(y0 * W); look(y0 * W + W - 1); }
-  if (best < 0) return;
-  var e = bins.get(best), R = e[0] / e[3], G = e[1] / e[3], Bl = e[2] / e[3];
-  var th = Math.pow(tol * 2.2, 2), seen = new Uint8Array(W * H), stack = [];
-  function bgLike(p){
-    var i = p * 4; if (d[i + 3] < 128) return true;
-    var dr = d[i] - R, dg = d[i + 1] - G, db = d[i + 2] - Bl;
-    return dr * dr * 0.3 + dg * dg * 0.59 + db * db * 0.11 <= th * 0.33;
+  for (var y0 = 1; y0 < H - 1; y0++) { look(y0 * W); look(y0 * W + W - 1); }
+  return Array.from(bins.values()).filter(function(e){ return e[3] >= total * 0.08; })
+    .sort(function(a, b){ return b[3] - a[3]; }).slice(0, 4)
+    .map(function(e){ return [e[0] / e[3], e[1] / e[3], e[2] / e[3]]; });
+}
+function removeBackground(d, W, H, a){
+  var n = W * H, T = a.tol * 1.3, orig = null, removedRefs = [], kept = new Uint8Array(n);
+  if (a.bg) {
+    var refs = borderColors(d, W, H), mark = new Uint8Array(n), seeds = [];
+    for (var x = 0; x < W; x++) seeds.push(x, (H - 1) * W + x);
+    for (var y = 0; y < H; y++) seeds.push(y * W, y * W + W - 1);
+    if (refs.length) {
+      wand(d, W, H, seeds, refs, T, mark);
+      for (var p = 0; p < n; p++) if (mark[p]) d[p * 4 + 3] = 0;
+      removedRefs = removedRefs.concat(refs);
+    }
   }
-  function push(p){ if (!seen[p] && bgLike(p)) { seen[p] = 1; stack.push(p); } }
-  for (var x1 = 0; x1 < W; x1++) { push(x1); push((H - 1) * W + x1); }
-  for (var y1 = 0; y1 < H; y1++) { push(y1 * W); push(y1 * W + W - 1); }
-  while (stack.length) {
-    var p = stack.pop(), px = p % W;
-    d[p * 4 + 3] = 0;
-    if (px > 0) push(p - 1);
-    if (px < W - 1) push(p + 1);
-    if (p >= W) push(p - W);
-    if (p < W * (H - 1)) push(p + W);
+  // 使用者在預覽圖上點的位置(座標存成 0–1 的比例,所以預覽和圖紙用同一組點)
+  a.taps.forEach(function(t){
+    var q = Math.min(H - 1, Math.floor(t.y * H)) * W + Math.min(W - 1, Math.floor(t.x * W)), m2 = new Uint8Array(n);
+    if (t.mode === 'erase') {
+      var c = [d[q * 4], d[q * 4 + 1], d[q * 4 + 2]];
+      if (d[q * 4 + 3] < 128) return;
+      wand(d, W, H, [q], [c], T, m2);
+      for (var p2 = 0; p2 < n; p2++) if (m2[p2]) d[p2 * 4 + 3] = 0;
+      removedRefs.push(c);
+    } else {
+      // 保留:在「還沒去背的照片」上從點的位置擴散,把這一塊被去掉的地方補回來
+      if (!orig) { orig = new Uint8ClampedArray(d.length); renderOriginal(orig, W, H, a); }
+      var oc = [orig[q * 4], orig[q * 4 + 1], orig[q * 4 + 2]];
+      wand(orig, W, H, [q], [oc], Math.min(T, 40), m2);   // 保留用固定的中等範圍,只補回點到的那一塊
+      for (var p3 = 0; p3 < n; p3++) if (m2[p3]) { d[p3 * 4 + 3] = orig[p3 * 4 + 3]; kept[p3] = 1; }
+    }
+  });
+  // 清殘邊:緊鄰透明區、顏色介於主角和背景之間(偏向背景)的點也清掉,做兩圈
+  if (a.edge && removedRefs.length) {
+    for (var pass = 0; pass < 2; pass++) {
+      var kill = [];
+      for (var p4 = 0; p4 < n; p4++) {
+        var i = p4 * 4; if (d[i + 3] < 128 || kept[p4]) continue;   // 使用者點了保留的地方不動
+        var px = p4 % W;
+        if (!((px > 0 && d[i - 1] < 128) || (px < W - 1 && d[i + 7] < 128) || (p4 >= W && d[i - W * 4 + 3] < 128) || (p4 < n - W && d[i + W * 4 + 3] < 128))) continue;
+        for (var r = 0; r < removedRefs.length; r++) if (cdist(d, i, removedRefs[r]) <= T * 1.8) { kill.push(i); break; }
+      }
+      kill.forEach(function(i2){ d[i2 + 3] = 0; });
+    }
   }
 }
+// 取得只調整過色調、還沒去背的照片(給「點一下保留」用)
+function renderOriginal(out, W, H, a){
+  var c = document.createElement('canvas'); c.width = W; c.height = H;
+  var x = c.getContext('2d'); x.imageSmoothingQuality = 'high';
+  x.drawImage(img, 0, 0, W, H);
+  var id = x.getImageData(0, 0, W, H);
+  applyTone(id.data, a);
+  out.set(id.data);
+}
+
+// ---------- 點預覽圖去背 / 保留 ----------
+var taps = [], tapMode = 'off';
+function setTapMode(m){
+  tapMode = m;
+  Array.prototype.forEach.call(document.querySelectorAll('.seg button'), function(b){ b.classList.toggle('on', b.dataset.mode === m); });
+  $('preview').classList.toggle('tapping', m !== 'off');
+}
+function syncTapUi(){
+  $('undoTap').hidden = $('clearTap').hidden = !taps.length;
+  $('clearTap').textContent = '清除點選(' + taps.length + ')';
+  if (typeof syncBgUi === 'function') syncBgUi();
+}
+Array.prototype.forEach.call(document.querySelectorAll('.seg button'), function(b){
+  b.addEventListener('click', function(){ setTapMode(b.dataset.mode); });
+});
+$('preview').addEventListener('click', function(e){
+  if (tapMode === 'off' || !img) return;
+  var r = this.getBoundingClientRect();
+  taps.push({ x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height, mode: tapMode });
+  syncTapUi(); updatePreview(); regenSoon();
+});
+$('undoTap').addEventListener('click', function(){ taps.pop(); syncTapUi(); updatePreview(); regenSoon(); });
+$('clearTap').addEventListener('click', function(){ taps = []; syncTapUi(); updatePreview(); regenSoon(); });
 
 // 預覽:套用目前的調整,透明的地方顯示棋盤格
 var previewQueued = false;
@@ -187,7 +297,7 @@ function updatePreview(){
     var W = Math.max(1, Math.round(img.naturalWidth * sc)), H = Math.max(1, Math.round(img.naturalHeight * sc));
     var r = renderAdjusted(img, W, H, adjustments()), pv = $('preview');
     pv.width = W; pv.height = H; pv.getContext('2d').drawImage(r.canvas, 0, 0);
-    pv.hidden = false;
+    pv.hidden = false; $('tapbar').hidden = false;
   });
 }
 
@@ -347,6 +457,7 @@ $('file').addEventListener('change', function(){
   var im = new Image();
   im.onload = function(){
     img = im; ratio = im.naturalHeight / im.naturalWidth;
+    taps = []; syncTapUi(); setTapMode('off');
     updatePreview();
     syncFromW(); $('go').disabled = false; $('status').textContent = '';
     generate();
@@ -372,7 +483,7 @@ function generate(){
     renderLegend(p);
     $('result').hidden = false;
     $('status').textContent = '';
-    window.LAST_PATTERN = { w: w, h: h, colors: p.colors.length, total: total, empty: p.grid.filter(function(v){ return v < 0; }).length };
+    window.LAST_PATTERN = { w: w, h: h, colors: p.colors.length, total: total, empty: p.grid.filter(function(v){ return v < 0; }).length, grid: p.grid };
   }, 20);
 }
 $('go').addEventListener('click', generate);
@@ -383,11 +494,12 @@ function regenSoon(){ clearTimeout(regenTimer); regenTimer = setTimeout(generate
   $(id).addEventListener('input', function(){ $(id + 'V').textContent = this.value; updatePreview(); });
   $(id).addEventListener('change', regenSoon);
 });
-function syncBgUi(){ $('tolBox').classList.toggle('off', !$('bg').checked); }
+function syncBgUi(){ $('edgeBox').classList.toggle('off', !$('bg').checked && !taps.some(function(t){ return t.mode === 'erase'; })); }
 $('bg').addEventListener('change', function(){ syncBgUi(); updatePreview(); regenSoon(); });
+$('edge').addEventListener('change', function(){ updatePreview(); regenSoon(); });
 $('reset').addEventListener('click', function(){
   [['bri', 0], ['con', 0], ['sat', 0], ['tol', 30]].forEach(function(p){ $(p[0]).value = p[1]; $(p[0] + 'V').textContent = p[1]; });
-  $('bg').checked = false; syncBgUi(); updatePreview(); regenSoon();
+  $('bg').checked = false; $('edge').checked = true; taps = []; syncTapUi(); setTapMode('off'); syncBgUi(); updatePreview(); regenSoon();
 });
 syncBgUi();
 $('k').addEventListener('change', generate);
