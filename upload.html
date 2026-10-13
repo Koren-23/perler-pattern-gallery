@@ -65,6 +65,19 @@
   .danger{width:100%;margin-top:8px;background:var(--panel);color:var(--danger);border:1px solid var(--danger);border-radius:10px;padding:10px;font-size:.92rem;font-weight:700;cursor:pointer;}
   .danger.armed{background:var(--danger);color:#fff;}
   .danger:disabled{opacity:.35;cursor:default;}
+  .tabs button{font-size:.85rem;padding:10px 6px;}
+  .check{display:flex;align-items:center;gap:8px;font-size:.85rem;margin:10px 0 0;}
+  .check input{width:18px;height:18px;flex:0 0 auto;}
+  .dup-group{margin-top:16px;}
+  .dup-head{font-size:.85rem;font-weight:700;margin-bottom:6px;}
+  .dup-head span{font-weight:600;color:var(--ink-soft);margin-left:6px;}
+  .dup-grid .cell{cursor:pointer;}
+  .dup-grid .cell img{border-width:2px;}
+  .dup-grid .cell.del img{border-color:var(--danger);opacity:.45;}
+  .dup-grid .tag{position:absolute;left:4px;right:4px;bottom:4px;font-size:.62rem;line-height:1.3;background:rgba(0,0,0,.6);color:#fff;border-radius:6px;padding:2px 4px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .dup-grid .mark{position:absolute;top:4px;right:4px;font-size:.65rem;font-weight:700;border-radius:6px;padding:1px 5px;background:var(--ok);color:#fff;}
+  .dup-grid .cell.del .mark{background:var(--danger);}
   .empty{font-size:.85rem;color:var(--ink-soft);text-align:center;padding:24px 0;}
   .link{background:none;border:none;color:var(--ink-soft);padding:0;cursor:pointer;text-decoration:underline;font-size:.8rem;}
 </style>
@@ -85,6 +98,7 @@
     <div class="tabs" id="tabs">
       <button type="button" data-tab="tabUpload" class="on">📤 上傳照片</button>
       <button type="button" data-tab="tabMove">🗂️ 整理分類</button>
+      <button type="button" data-tab="tabDup">🔍 找重複</button>
     </div>
     <div class="card" id="tabUpload">
       <label class="field" for="cat">分類</label>
@@ -123,6 +137,17 @@
         <div class="status" id="mvStatus"></div>
       </div>
       <p class="hint">移過去的照片會改成新分類接續的編號,不會覆蓋原有的照片。刪除要按兩次確認;刪掉的照片仍保留在 GitHub 的歷史紀錄中,誤刪可以救回。網站約 1 分鐘後更新;剛移動或剛上傳的照片,縮圖可能要等網站更新後才看得到。</p>
+    </div>
+    <div class="card" id="tabDup" hidden>
+      <p class="hint" style="margin-top:0">掃描所有分類,找出重複的照片。「完全相同」的會先幫你勾好多的那幾張;「看起來很像」的請自己確認(可能是故意做的不同版本)。</p>
+      <label class="check"><input type="checkbox" id="dupSimilar">也找看起來很像的照片(會下載所有縮圖比對,比較慢)</label>
+      <button class="primary" id="dupScan">🔍 開始掃描</button>
+      <div class="status" id="dupStatus"></div>
+      <div id="dupList"></div>
+      <div class="mv-action" id="dupAction" hidden>
+        <button class="danger" id="dupDel" type="button" disabled>🗑️ 刪除</button>
+        <div class="status" id="dupDelStatus"></div>
+      </div>
     </div>
     <div class="foot"><a href="./">← 回圖庫</a><button class="link" id="resetToken">清除這支手機的權杖</button></div>
   </section>
@@ -394,6 +419,101 @@ async function commitRename(slug, name, icon){
   return { slug: newSlug, oldName: oldName, cat: cat };
 }
 
+// 整個 repo 的檔案清單 → { 路徑: blob sha }。內容一模一樣的檔案 sha 也一樣
+async function repoTree(treeSha){
+  var t = await gh('/git/trees/' + treeSha + '?recursive=1'), m = {};
+  if (t.truncated) throw new Error('檔案太多,GitHub 無法一次列出');
+  t.tree.forEach(function(e){ if (e.type === 'blob') m[e.path] = e.sha; });
+  return m;
+}
+// 刪除跨多個分類的照片 items: [{slug, file}],存成一個 commit
+async function commitDeleteMany(items, label){
+  var s = await readState(), tm = await repoTree(s.baseTree), bySlug = {}, order = [], tree = [];
+  items.forEach(function(it){
+    var c = s.data.filter(function(x){ return x.slug === it.slug; })[0];
+    if (!c || c.files.indexOf(it.file) < 0) throw new Error('有照片已經被移動或刪除了,請重新掃描');
+    if (!bySlug[it.slug]) { bySlug[it.slug] = []; order.push(it.slug); }
+    bySlug[it.slug].push(it.file);
+  });
+  var parts = order.map(function(slug){
+    var c = s.data.filter(function(x){ return x.slug === slug; })[0], fs = bySlug[slug];
+    fs.forEach(function(f){ ['images', 'thumbs'].forEach(function(b){
+      var path = b + '/' + slug + '/' + f; if (tm[path]) tree.push({ path: path, mode: '100644', type: 'blob', sha: null });
+    }); });
+    c.files = c.files.filter(function(f){ return fs.indexOf(f) < 0; });
+    if (!c.files.length && !tm['images/' + slug + '/.gitkeep']) tree.push({ path: 'images/' + slug + '/.gitkeep', mode: '100644', type: 'blob', content: '' });
+    return c.name + ' ' + fs.map(numberOf).join('、');
+  });
+  await writeState(s, tree, label + ':' + items.length + ' 張(' + parts.join(';') + ')');
+}
+
+// 「看起來很像」用的縮圖指紋:16×16 灰階差異雜湊(256 bit)+ 平均顏色
+function thumbPrint(url){
+  return new Promise(function(resolve){
+    var im = new Image();
+    im.onload = function(){
+      try {
+        var c = document.createElement('canvas'); c.width = 17; c.height = 16;
+        var x = c.getContext('2d'); x.drawImage(im, 0, 0, 17, 16);
+        var d = x.getImageData(0, 0, 17, 16).data, bits = new Uint8Array(32), r = 0, g = 0, b = 0, k = 0;
+        for (var y = 0; y < 16; y++) for (var x2 = 0; x2 < 16; x2++) {
+          var i = (y * 17 + x2) * 4, j = i + 4;
+          var l1 = d[i] * .299 + d[i + 1] * .587 + d[i + 2] * .114, l2 = d[j] * .299 + d[j + 1] * .587 + d[j + 2] * .114;
+          if (l1 > l2) bits[k >> 3] |= 1 << (k & 7);
+          k++; r += d[i]; g += d[i + 1]; b += d[i + 2];
+        }
+        resolve({ bits: bits, rgb: [r / 256, g / 256, b / 256] });
+      } catch (e) { resolve(null); }
+    };
+    im.onerror = function(){ resolve(null); };
+    im.src = url;
+  });
+}
+var POP = new Uint8Array(256); for (var pi = 1; pi < 256; pi++) POP[pi] = POP[pi >> 1] + (pi & 1);
+function hamming(a, b){ var n = 0; for (var i = 0; i < 32; i++) n += POP[a[i] ^ b[i]]; return n; }
+
+async function scanDuplicates(withSimilar, progress){
+  var s = await readState(), tm = await repoTree(s.baseTree), items = [];
+  s.data.forEach(function(c, ci){ c.files.forEach(function(f){
+    var sha = tm['images/' + c.slug + '/' + f];
+    if (sha) items.push({ slug: c.slug, file: f, sha: sha, ci: ci, other: !!c.emojiIcon, name: c.name });
+  }); });
+  // union-find:同一個 sha(完全相同)或指紋很接近(看起來很像)的放同一組
+  var parent = items.map(function(_, i){ return i; });
+  function find(i){ while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
+  function union(a, b){ a = find(a); b = find(b); if (a !== b) parent[b] = a; }
+  var bySha = {};
+  items.forEach(function(it, i){ if (bySha[it.sha] === undefined) bySha[it.sha] = i; else union(bySha[it.sha], i); });
+  if (withSimilar) {
+    var prints = new Array(items.length), next = 0, done = 0;
+    var worker = async function(){
+      while (next < items.length) {
+        var i = next++;
+        prints[i] = await thumbPrint(thumbUrl(items[i].slug, items[i].file));
+        if (++done % 25 === 0) progress('比對縮圖 ' + done + ' / ' + items.length + '…');
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker(), worker(), worker()]);
+    for (var a = 0; a < items.length; a++) {
+      if (!prints[a]) continue;
+      for (var b = a + 1; b < items.length; b++) {
+        if (!prints[b] || items[a].sha === items[b].sha) continue;
+        var pa = prints[a], pb = prints[b];
+        if (Math.abs(pa.rgb[0] - pb.rgb[0]) + Math.abs(pa.rgb[1] - pb.rgb[1]) + Math.abs(pa.rgb[2] - pb.rgb[2]) > 36) continue;
+        if (hamming(pa.bits, pb.bits) <= 18) union(a, b);
+      }
+    }
+  }
+  var groups = {};
+  items.forEach(function(it, i){ var r = find(i); (groups[r] = groups[r] || []).push(it); });
+  return Object.keys(groups).map(function(k){ return groups[k]; }).filter(function(g){ return g.length > 1; }).map(function(g){
+    // 保留順序:放在正式分類的優先(「其他」排後面),再依分類順序與編號
+    g.sort(function(x, y){ return (x.other - y.other) || (x.ci - y.ci) || (x.file < y.file ? -1 : 1); });
+    var exact = g.every(function(it){ return it.sha === g[0].sha; });
+    return { exact: exact, items: g };
+  }).sort(function(x, y){ return (y.exact - x.exact) || (y.items.length - x.items.length); });
+}
+
 // 新分類:編號接在最大的 cNN 後面,資料夾名稱去掉 Windows 不允許的字元(例如「/」)
 var INVALID_CHARS = /[\\\/:*?"<>|]/g;
 async function commitNewCategory(name, icon){
@@ -609,6 +729,84 @@ var delArmed = false, delTimer = null;
 function disarmDelete(){ delArmed = false; clearTimeout(delTimer); $('delBtn').classList.remove('armed'); }
 $('mvFrom').addEventListener('change', function(){ mvSel = []; setStatus($('mvStatus'), ''); renderMoveGrid(); });
 $('mvTo').addEventListener('change', syncMoveUi);
+
+// ---------- 找重複 ----------
+var dupGroups = [], dupDel = {}, dupArmed = false, dupTimer = null;
+function dupKey(it){ return it.slug + '/' + it.file; }
+function renderDups(){
+  var box = $('dupList'); box.innerHTML = '';
+  dupGroups.forEach(function(g){
+    var wrap = document.createElement('div'); wrap.className = 'dup-group';
+    var h = document.createElement('div'); h.className = 'dup-head';
+    h.textContent = g.exact ? '完全相同' : '看起來很像';
+    var sp = document.createElement('span'); sp.textContent = g.items.length + ' 張'; h.appendChild(sp);
+    wrap.appendChild(h);
+    var grid = document.createElement('div'); grid.className = 'grid dup-grid';
+    g.items.forEach(function(it){
+      var del = !!dupDel[dupKey(it)];
+      var cell = document.createElement('div'); cell.className = 'cell' + (del ? ' del' : '');
+      var im = document.createElement('img'); im.src = thumbUrl(it.slug, it.file); im.loading = 'lazy';
+      var tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = it.name + ' ' + numberOf(it.file);
+      var mk = document.createElement('span'); mk.className = 'mark'; mk.textContent = del ? '刪除' : '保留';
+      cell.appendChild(im); cell.appendChild(tag); cell.appendChild(mk);
+      cell.addEventListener('click', function(){
+        if (busy) return;
+        var k = dupKey(it);
+        if (!dupDel[k] && g.items.filter(function(x){ return !dupDel[dupKey(x)]; }).length <= 1) {
+          setStatus($('dupDelStatus'), '每一組至少要保留一張', 'err'); return;
+        }
+        if (dupDel[k]) delete dupDel[k]; else dupDel[k] = it;
+        setStatus($('dupDelStatus'), ''); renderDups();
+      });
+      grid.appendChild(cell);
+    });
+    wrap.appendChild(grid); box.appendChild(wrap);
+  });
+  syncDupUi();
+}
+function syncDupUi(){
+  var n = Object.keys(dupDel).length;
+  $('dupAction').hidden = !dupGroups.length;
+  if (!n || busy) { dupArmed = false; clearTimeout(dupTimer); $('dupDel').classList.remove('armed'); }
+  $('dupDel').textContent = dupArmed ? '再按一次確認刪除 ' + n + ' 張' : n ? '🗑️ 刪除標成「刪除」的 ' + n + ' 張' : '點照片切換保留 / 刪除';
+  $('dupDel').disabled = !n || busy;
+  $('dupScan').disabled = busy;
+}
+$('dupScan').addEventListener('click', async function(){
+  if (busy) return;
+  busy = true; dupGroups = []; dupDel = {}; renderDups(); setStatus($('dupDelStatus'), '');
+  var st = $('dupStatus'); setStatus(st, '掃描中…');
+  try {
+    dupGroups = await scanDuplicates($('dupSimilar').checked, function(m){ setStatus(st, m); });
+    dupGroups.forEach(function(g){ if (g.exact) g.items.slice(1).forEach(function(it){ dupDel[dupKey(it)] = it; }); });
+    var ex = dupGroups.filter(function(g){ return g.exact; }).length, si = dupGroups.length - ex;
+    setStatus(st, dupGroups.length ? '找到 ' + ex + ' 組完全相同' + ($('dupSimilar').checked ? '、' + si + ' 組看起來很像' : '') + '的照片。點照片可以切換保留 / 刪除。' : '✅ 沒有找到重複的照片。', dupGroups.length ? '' : 'ok');
+  } catch (e) {
+    setStatus(st, e.status === 401 ? '權杖無效或已過期,請重新設定。' : '❌ 掃描失敗:' + e.message, 'err');
+  } finally { busy = false; renderDups(); }
+});
+$('dupDel').addEventListener('click', async function(){
+  var items = Object.keys(dupDel).map(function(k){ return dupDel[k]; });
+  if (busy || !items.length) return;
+  if (!dupArmed) {
+    dupArmed = true; this.classList.add('armed'); syncDupUi();
+    dupTimer = setTimeout(function(){ dupArmed = false; $('dupDel').classList.remove('armed'); syncDupUi(); }, 5000);
+    return;
+  }
+  dupArmed = false; clearTimeout(dupTimer); this.classList.remove('armed');
+  var st = $('dupDelStatus'); busy = true; syncDupUi(); setStatus(st, '刪除中…');
+  try {
+    await withRetry(st, function(){ return commitDeleteMany(items, '手機刪除重複照片'); });
+    var gone = {}; items.forEach(function(it){ gone[dupKey(it)] = 1; });
+    dupGroups = dupGroups.map(function(g){ return { exact: g.exact, items: g.items.filter(function(it){ return !gone[dupKey(it)]; }) }; })
+      .filter(function(g){ return g.items.length > 1; });
+    dupDel = {};
+    await loadPhotos();
+    setStatus(st, '✅ 已刪除 ' + items.length + ' 張重複的照片。網站約 1 分鐘後更新;誤刪可以從 GitHub 歷史紀錄救回。', 'ok');
+  } catch (e) {
+    setStatus(st, e.status === 401 ? '權杖無效或已過期,請重新設定。' : '❌ 刪除失敗:' + e.message + '\n網站沒有任何變更。', 'err');
+  } finally { busy = false; renderDups(); }
+});
 function fillRename(){ var c = catOf($('mvFrom').value); $('renName').value = c ? c.name : ''; $('renIcon').value = c ? c.icon : ''; setStatus($('renStatus'), ''); }
 $('renToggle').addEventListener('click', function(){ var b = $('renBox'); b.hidden = !b.hidden; if (!b.hidden) { fillRename(); $('renName').focus(); } });
 $('mvFrom').addEventListener('change', function(){ if (!$('renBox').hidden) fillRename(); });
