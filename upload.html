@@ -13,6 +13,7 @@
     --border:#e6e6e3; --accent:#2563eb; --accent-ink:#ffffff; --danger:#dc2626; --ok:#16a34a;
   }
   *{box-sizing:border-box;}
+  [hidden]{display:none !important;}   /* 有 display 樣式的元素也要能被 hidden 藏起來 */
   html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;}
   .app{max-width:520px;margin:0 auto;padding:14px 16px 40px;}
@@ -50,6 +51,18 @@
   .newcat{margin-top:8px;padding:12px;border:1px solid var(--border);border-radius:12px;display:grid;gap:8px;}
   .secondary{background:var(--bg);color:var(--ink);border:1px solid var(--border);border-radius:10px;padding:10px;font-size:.95rem;font-weight:600;cursor:pointer;}
   .secondary:disabled{opacity:.4;cursor:default;}
+  .tabs{display:flex;gap:6px;margin-bottom:12px;}
+  .tabs button{flex:1;border:1px solid var(--border);background:var(--panel);border-radius:10px;padding:10px;font-size:.92rem;font-weight:700;cursor:pointer;color:var(--ink);}
+  .tabs button.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);}
+  .mv-tools{display:flex;justify-content:space-between;align-items:center;margin:12px 0 6px;font-size:.82rem;color:var(--ink-soft);}
+  .mv-grid .cell{cursor:pointer;}
+  .mv-grid .cell.sel img{outline:3px solid var(--accent);outline-offset:-3px;opacity:.85;}
+  .mv-grid .cell .tick{position:absolute;top:4px;right:4px;width:22px;height:22px;border-radius:50%;background:rgba(255,255,255,.85);
+    border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.25);font-size:.75rem;line-height:18px;text-align:center;color:#fff;}
+  .mv-grid .cell.sel .tick{background:var(--accent);}
+  .mv-grid .num{position:absolute;left:4px;bottom:4px;font-size:.65rem;background:rgba(0,0,0,.55);color:#fff;border-radius:6px;padding:1px 5px;}
+  .mv-action{position:sticky;bottom:0;margin:14px -16px -16px;padding:12px 16px calc(14px + env(safe-area-inset-bottom));background:var(--panel);border-top:1px solid var(--border);border-radius:0 0 14px 14px;box-shadow:0 -6px 14px rgba(0,0,0,.06);}
+  .empty{font-size:.85rem;color:var(--ink-soft);text-align:center;padding:24px 0;}
   .link{background:none;border:none;color:var(--ink-soft);padding:0;cursor:pointer;text-decoration:underline;font-size:.8rem;}
 </style>
 </head>
@@ -66,7 +79,11 @@
   </section>
 
   <section id="main" hidden>
-    <div class="card">
+    <div class="tabs" id="tabs">
+      <button type="button" data-tab="tabUpload" class="on">📤 上傳照片</button>
+      <button type="button" data-tab="tabMove">🗂️ 整理分類</button>
+    </div>
+    <div class="card" id="tabUpload">
       <label class="field" for="cat">分類</label>
       <select id="cat"></select>
       <button class="link newcat-toggle" id="newCatToggle" type="button">＋ 新增分類</button>
@@ -82,6 +99,19 @@
       <button class="primary" id="uploadBtn" disabled>上傳</button>
       <button class="secondary wide" id="cancelBtn" type="button" hidden>清除全部</button>
       <div class="status" id="status"></div>
+    </div>
+    <div class="card" id="tabMove" hidden>
+      <label class="field" for="mvFrom">照片現在在哪個分類</label>
+      <select id="mvFrom"></select>
+      <div class="mv-tools"><span id="mvCount">點照片選取要移動的</span><button class="link" id="mvAll" type="button">全選</button></div>
+      <div class="grid mv-grid" id="mvGrid"></div>
+      <div class="mv-action">
+        <label class="field" for="mvTo">移到哪個分類</label>
+        <select id="mvTo"></select>
+        <button class="primary" id="mvBtn" disabled>移動</button>
+        <div class="status" id="mvStatus"></div>
+      </div>
+      <p class="hint">移過去的照片會改成新分類接續的編號,不會覆蓋原有的照片。網站約 1 分鐘後更新;剛移動或剛上傳的照片,縮圖可能要等網站更新後才看得到。</p>
     </div>
     <div class="foot"><a href="./">← 回圖庫</a><button class="link" id="resetToken">清除這支手機的權杖</button></div>
   </section>
@@ -204,6 +234,8 @@ async function loadPhotos(){
     sel.appendChild(o);
   });
   if (last && photos.some(function(c){ return c.slug === last; })) sel.value = last;
+  fillMoveSelects();
+  if (!$('tabMove').hidden) renderMoveGrid();
 }
 
 // 讀取 GitHub 上最新的清單與網頁,作為這次修改的基礎
@@ -273,6 +305,38 @@ async function commitUploads(items){
   var msg = '手機上傳:' + results.map(function(r){ return r.cat.name + ' ' + label(r.names); }).join('、');
   await writeState(s, tree, msg);
   return results;
+}
+
+// 列出 GitHub 上某個資料夾的檔案 → { 檔名: blob sha }
+async function listDir(path, ref){
+  var r = await gh('/contents/' + path.split('/').map(encodeURIComponent).join('/') + '?ref=' + ref);
+  var m = {}; (Array.isArray(r) ? r : []).forEach(function(e){ m[e.name] = e.sha; });
+  return m;
+}
+// 把 from 分類的 files 移到 to 分類:新位置用同一個檔案(不必重新上傳),舊位置刪除,全部存成一個 commit
+async function commitMove(from, to, files){
+  var s = await readState();
+  var src = s.data.filter(function(c){ return c.slug === from; })[0], dst = s.data.filter(function(c){ return c.slug === to; })[0];
+  if (!src || !dst) throw new Error('找不到分類,可能已被改名,請重新整理頁面');
+  var gone = files.filter(function(f){ return src.files.indexOf(f) < 0; });
+  if (gone.length) throw new Error('有 ' + gone.length + ' 張照片已經不在「' + src.name + '」(可能在別的裝置移動過),請重新整理頁面');
+  var lists = await Promise.all([listDir('images/' + from, s.head), listDir('thumbs/' + from, s.head)]), imgs = lists[0], ths = lists[1];
+  var prefix = prefixOf(to), n = nextNumber(dst.files, prefix), names = [], tree = [];
+  var blob = function(path, sha){ return { path: path, mode: '100644', type: 'blob', sha: sha }; };
+  files.forEach(function(f, i){
+    if (!imgs[f]) throw new Error('GitHub 上找不到原圖 ' + f + ',請重新整理頁面');
+    var nn = prefix + '_' + pad3(n + i) + '.jpg';
+    names.push(nn);
+    tree.push(blob('images/' + to + '/' + nn, imgs[f]), blob('images/' + from + '/' + f, null));   // sha: null = 刪除
+    if (ths[f]) tree.push(blob('thumbs/' + to + '/' + nn, ths[f]), blob('thumbs/' + from + '/' + f, null));
+  });
+  src.files = src.files.filter(function(f){ return files.indexOf(f) < 0; });
+  dst.files = dst.files.concat(names).sort();
+  // 原分類被搬空時留一個 .gitkeep,資料夾才不會消失
+  if (!src.files.length && !imgs['.gitkeep']) tree.push({ path: 'images/' + from + '/.gitkeep', mode: '100644', type: 'blob', content: '' });
+  var a = numberOf(names[0]), b = numberOf(names[names.length - 1]);
+  await writeState(s, tree, '手機整理:' + src.name + ' ' + files.length + ' 張移到 ' + dst.name + '(' + (a === b ? a : a + '-' + b) + ')');
+  return { src: src, dst: dst, names: names };
 }
 
 // 新分類:編號接在最大的 cNN 後面,資料夾名稱去掉 Windows 不允許的字元(例如「/」)
@@ -421,6 +485,88 @@ $('files').addEventListener('change', function(){
   renderQueue();
 });
 $('uploadBtn').addEventListener('click', upload);
+
+// ---------- 分頁切換 ----------
+Array.prototype.forEach.call(document.querySelectorAll('#tabs button'), function(b){
+  b.addEventListener('click', function(){
+    Array.prototype.forEach.call(document.querySelectorAll('#tabs button'), function(o){
+      o.classList.toggle('on', o === b); $(o.dataset.tab).hidden = o !== b;
+    });
+    if (b.dataset.tab === 'tabMove') renderMoveGrid();
+  });
+});
+
+// ---------- 整理分類:選照片 → 選目的地 → 移動 ----------
+var mvSel = [];
+function fillMoveSelects(){
+  var from = $('mvFrom').value || getStored('lastCat'), to = $('mvTo').value;
+  ['mvFrom', 'mvTo'].forEach(function(id){
+    var sel = $(id); sel.innerHTML = '';
+    (photos || []).forEach(function(c){
+      var o = document.createElement('option');
+      o.value = c.slug; o.textContent = c.icon + ' ' + c.name + '(' + c.files.length + ' 張)';
+      sel.appendChild(o);
+    });
+  });
+  if (from && catOf(from)) $('mvFrom').value = from;
+  if (to && catOf(to)) $('mvTo').value = to;
+  else { var other = (photos || []).filter(function(c){ return c.slug !== $('mvFrom').value; })[0]; if (other) $('mvTo').value = other.slug; }
+}
+function thumbUrl(slug, f){ return 'thumbs/' + encodeURIComponent(slug) + '/' + encodeURIComponent(f); }
+function renderMoveGrid(){
+  var cat = catOf($('mvFrom').value), grid = $('mvGrid');
+  grid.innerHTML = '';
+  mvSel = mvSel.filter(function(f){ return cat && cat.files.indexOf(f) >= 0; });
+  if (!cat || !cat.files.length) {
+    var e = document.createElement('div'); e.className = 'empty'; e.textContent = '這個分類目前沒有照片';
+    grid.appendChild(e);
+  } else cat.files.forEach(function(f){
+    var cell = document.createElement('div'); cell.className = 'cell' + (mvSel.indexOf(f) >= 0 ? ' sel' : '');
+    var im = document.createElement('img'); im.src = thumbUrl(cat.slug, f); im.loading = 'lazy'; im.alt = f;
+    var tick = document.createElement('span'); tick.className = 'tick'; tick.textContent = '✓';
+    var num = document.createElement('span'); num.className = 'num'; num.textContent = numberOf(f);
+    cell.appendChild(im); cell.appendChild(tick); cell.appendChild(num);
+    cell.addEventListener('click', function(){
+      if (busy) return;
+      var k = mvSel.indexOf(f);
+      if (k >= 0) mvSel.splice(k, 1); else mvSel.push(f);
+      cell.classList.toggle('sel', k < 0); syncMoveUi();
+    });
+    grid.appendChild(cell);
+  });
+  syncMoveUi();
+}
+function syncMoveUi(){
+  var cat = catOf($('mvFrom').value), dst = catOf($('mvTo').value), n = mvSel.length;
+  $('mvCount').textContent = n ? '已選 ' + n + ' 張' : '點照片選取要移動的';
+  $('mvAll').textContent = cat && cat.files.length && n === cat.files.length ? '取消全選' : '全選';
+  $('mvAll').hidden = !cat || !cat.files.length;
+  var same = cat && dst && cat.slug === dst.slug;
+  $('mvBtn').textContent = same ? '請選擇不同的分類' : n ? '移動 ' + n + ' 張到「' + (dst ? dst.name : '') + '」' : '移動';
+  $('mvBtn').disabled = !n || same || busy;
+}
+$('mvFrom').addEventListener('change', function(){ mvSel = []; setStatus($('mvStatus'), ''); renderMoveGrid(); });
+$('mvTo').addEventListener('change', syncMoveUi);
+$('mvAll').addEventListener('click', function(){
+  var cat = catOf($('mvFrom').value); if (!cat || busy) return;
+  mvSel = mvSel.length === cat.files.length ? [] : cat.files.slice();
+  renderMoveGrid();
+});
+$('mvBtn').addEventListener('click', async function(){
+  if (busy || !mvSel.length) return;
+  var from = $('mvFrom').value, to = $('mvTo').value, files = mvSel.slice().sort(), st = $('mvStatus');
+  busy = true; syncMoveUi(); setStatus(st, '移動中…');
+  try {
+    var r = await withRetry(st, function(){ return commitMove(from, to, files); });
+    mvSel = [];
+    await loadPhotos();
+    setStatus(st, '✅ 已把 ' + r.names.length + ' 張從「' + r.src.name + '」移到「' + r.dst.name + '」(' + r.names.join(', ') + ')。\n網站約 1 分鐘後更新。', 'ok');
+  } catch (e) {
+    setStatus(st, e.status === 401 ? '權杖無效或已過期,請重新設定。' : '❌ 移動失敗:' + e.message + '\n網站沒有任何變更。', 'err');
+  } finally {
+    busy = false; renderMoveGrid();
+  }
+});
 $('cancelBtn').addEventListener('click', function(){
   if (busy) { cancelRequested = true; setStatus($('status'), '正在取消…'); renderQueue(); }
   else clearQueue();
