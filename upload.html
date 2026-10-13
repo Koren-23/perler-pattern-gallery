@@ -106,6 +106,13 @@
     <div class="card" id="tabMove" hidden>
       <label class="field" for="mvFrom">照片現在在哪個分類</label>
       <select id="mvFrom"></select>
+      <button class="link newcat-toggle" id="renToggle" type="button">✏️ 改這個分類的名稱/圖示</button>
+      <div class="newcat" id="renBox" hidden>
+        <input type="text" id="renName" placeholder="分類名稱" autocomplete="off">
+        <input type="text" id="renIcon" placeholder="圖示(表情符號)" autocomplete="off">
+        <button class="secondary" id="renBtn" type="button">儲存</button>
+        <div class="status" id="renStatus"></div>
+      </div>
       <div class="mv-tools"><span id="mvCount">點照片選取要移動的</span><button class="link" id="mvAll" type="button">全選</button></div>
       <div class="grid mv-grid" id="mvGrid"></div>
       <div class="mv-action">
@@ -363,6 +370,30 @@ async function commitDelete(from, files){
   return { src: src, files: files };
 }
 
+// 改分類名稱/圖示。資料夾名稱是「cNN_名稱」,名稱改了資料夾也跟著改(檔名只用 cNN,不必重新編號)
+async function commitRename(slug, name, icon){
+  var s = await readState();
+  var cat = s.data.filter(function(c){ return c.slug === slug; })[0];
+  if (!cat) throw new Error('找不到分類,可能已被改名,請重新整理頁面');
+  if (s.data.some(function(c){ return c !== cat && c.name === name; })) throw new Error('已經有「' + name + '」這個分類');
+  var newSlug = prefixOf(slug) + '_' + name.replace(INVALID_CHARS, '');
+  if (newSlug !== slug && s.data.some(function(c){ return c.slug === newSlug; })) throw new Error('資料夾名稱 ' + newSlug + ' 已被使用');
+  var tree = [], oldName = cat.name;
+  if (newSlug !== slug) {
+    var lists = await Promise.all([listDir('images/' + slug, s.head), listDir('thumbs/' + slug, s.head)]);
+    [['images', lists[0]], ['thumbs', lists[1]]].forEach(function(L){
+      Object.keys(L[1]).forEach(function(f){
+        tree.push({ path: L[0] + '/' + newSlug + '/' + f, mode: '100644', type: 'blob', sha: L[1][f] });
+        tree.push({ path: L[0] + '/' + slug + '/' + f, mode: '100644', type: 'blob', sha: null });
+      });
+    });
+    if (!Object.keys(lists[0]).length) tree.push({ path: 'images/' + newSlug + '/.gitkeep', mode: '100644', type: 'blob', content: '' });
+  }
+  cat.slug = newSlug; cat.name = name; if (icon) cat.icon = icon;
+  await writeState(s, tree, '手機修改分類:' + oldName + (oldName !== name ? ' → ' + name : '') + (icon ? '(圖示 ' + cat.icon + ')' : ''));
+  return { slug: newSlug, oldName: oldName, cat: cat };
+}
+
 // 新分類:編號接在最大的 cNN 後面,資料夾名稱去掉 Windows 不允許的字元(例如「/」)
 var INVALID_CHARS = /[\\\/:*?"<>|]/g;
 async function commitNewCategory(name, icon){
@@ -578,6 +609,31 @@ var delArmed = false, delTimer = null;
 function disarmDelete(){ delArmed = false; clearTimeout(delTimer); $('delBtn').classList.remove('armed'); }
 $('mvFrom').addEventListener('change', function(){ mvSel = []; setStatus($('mvStatus'), ''); renderMoveGrid(); });
 $('mvTo').addEventListener('change', syncMoveUi);
+function fillRename(){ var c = catOf($('mvFrom').value); $('renName').value = c ? c.name : ''; $('renIcon').value = c ? c.icon : ''; setStatus($('renStatus'), ''); }
+$('renToggle').addEventListener('click', function(){ var b = $('renBox'); b.hidden = !b.hidden; if (!b.hidden) { fillRename(); $('renName').focus(); } });
+$('mvFrom').addEventListener('change', function(){ if (!$('renBox').hidden) fillRename(); });
+$('renBtn').addEventListener('click', async function(){
+  var slug = $('mvFrom').value, c = catOf(slug), name = $('renName').value.trim(), icon = $('renIcon').value.trim(), st = $('renStatus');
+  if (!c) return;
+  if (!name || !name.replace(INVALID_CHARS, '')) { setStatus(st, '請輸入分類名稱', 'err'); return; }
+  if (name === c.name && (!icon || icon === c.icon)) { setStatus(st, '名稱和圖示都沒有變更'); return; }
+  if (busy) return;
+  busy = true; this.disabled = true; syncMoveUi(); setStatus(st, '儲存中…');
+  try {
+    var r = await withRetry(st, function(){ return commitRename(slug, name, icon); });
+    if (getStored('lastCat') === slug) setStored('lastCat', r.slug);
+    picked.forEach(function(p){ if (p.slug === slug) p.slug = r.slug; });   // 上傳清單裡等著上傳的照片也跟著改
+    $('mvFrom').value = '';
+    await loadPhotos();
+    $('mvFrom').value = r.slug; renderMoveGrid(); renderQueue();
+    $('renBox').hidden = true;
+    setStatus($('mvStatus'), '✅ 已把「' + r.oldName + '」改成「' + r.cat.icon + ' ' + r.cat.name + '」。網站約 1 分鐘後更新。', 'ok');
+  } catch (e) {
+    setStatus(st, e.status === 401 ? '權杖無效或已過期,請重新設定。' : '❌ ' + e.message, 'err');
+  } finally {
+    busy = false; this.disabled = false; syncMoveUi();
+  }
+});
 $('delBtn').addEventListener('click', async function(){
   if (busy || !mvSel.length) return;
   if (!delArmed) {
