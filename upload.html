@@ -62,6 +62,9 @@
   .mv-grid .cell.sel .tick{background:var(--accent);}
   .mv-grid .num{position:absolute;left:4px;bottom:4px;font-size:.65rem;background:rgba(0,0,0,.55);color:#fff;border-radius:6px;padding:1px 5px;}
   .mv-action{position:sticky;bottom:0;margin:14px -16px -16px;padding:12px 16px calc(14px + env(safe-area-inset-bottom));background:var(--panel);border-top:1px solid var(--border);border-radius:0 0 14px 14px;box-shadow:0 -6px 14px rgba(0,0,0,.06);}
+  .danger{width:100%;margin-top:8px;background:var(--panel);color:var(--danger);border:1px solid var(--danger);border-radius:10px;padding:10px;font-size:.92rem;font-weight:700;cursor:pointer;}
+  .danger.armed{background:var(--danger);color:#fff;}
+  .danger:disabled{opacity:.35;cursor:default;}
   .empty{font-size:.85rem;color:var(--ink-soft);text-align:center;padding:24px 0;}
   .link{background:none;border:none;color:var(--ink-soft);padding:0;cursor:pointer;text-decoration:underline;font-size:.8rem;}
 </style>
@@ -109,9 +112,10 @@
         <label class="field" for="mvTo">移到哪個分類</label>
         <select id="mvTo"></select>
         <button class="primary" id="mvBtn" disabled>移動</button>
+        <button class="danger" id="delBtn" type="button" disabled>🗑️ 刪除</button>
         <div class="status" id="mvStatus"></div>
       </div>
-      <p class="hint">移過去的照片會改成新分類接續的編號,不會覆蓋原有的照片。網站約 1 分鐘後更新;剛移動或剛上傳的照片,縮圖可能要等網站更新後才看得到。</p>
+      <p class="hint">移過去的照片會改成新分類接續的編號,不會覆蓋原有的照片。刪除要按兩次確認;刪掉的照片仍保留在 GitHub 的歷史紀錄中,誤刪可以救回。網站約 1 分鐘後更新;剛移動或剛上傳的照片,縮圖可能要等網站更新後才看得到。</p>
     </div>
     <div class="foot"><a href="./">← 回圖庫</a><button class="link" id="resetToken">清除這支手機的權杖</button></div>
   </section>
@@ -339,6 +343,26 @@ async function commitMove(from, to, files){
   return { src: src, dst: dst, names: names };
 }
 
+// 刪除 from 分類裡的 files(原圖與縮圖),存成一個 commit
+async function commitDelete(from, files){
+  var s = await readState();
+  var src = s.data.filter(function(c){ return c.slug === from; })[0];
+  if (!src) throw new Error('找不到分類,可能已被改名,請重新整理頁面');
+  var gone = files.filter(function(f){ return src.files.indexOf(f) < 0; });
+  if (gone.length) throw new Error('有 ' + gone.length + ' 張照片已經不在「' + src.name + '」(可能在別的裝置處理過),請重新整理頁面');
+  var lists = await Promise.all([listDir('images/' + from, s.head), listDir('thumbs/' + from, s.head)]), imgs = lists[0], ths = lists[1];
+  var tree = [];
+  files.forEach(function(f){
+    if (imgs[f]) tree.push({ path: 'images/' + from + '/' + f, mode: '100644', type: 'blob', sha: null });
+    if (ths[f]) tree.push({ path: 'thumbs/' + from + '/' + f, mode: '100644', type: 'blob', sha: null });
+  });
+  src.files = src.files.filter(function(f){ return files.indexOf(f) < 0; });
+  if (!src.files.length && !imgs['.gitkeep']) tree.push({ path: 'images/' + from + '/.gitkeep', mode: '100644', type: 'blob', content: '' });
+  var nums = files.map(numberOf);
+  await writeState(s, tree, '手機刪除:' + src.name + ' ' + files.length + ' 張(' + (nums.length > 6 ? nums.slice(0, 6).join('、') + '…' : nums.join('、')) + ')');
+  return { src: src, files: files };
+}
+
 // 新分類:編號接在最大的 cNN 後面,資料夾名稱去掉 Windows 不允許的字元(例如「/」)
 var INVALID_CHARS = /[\\\/:*?"<>|]/g;
 async function commitNewCategory(name, icon){
@@ -544,9 +568,37 @@ function syncMoveUi(){
   var same = cat && dst && cat.slug === dst.slug;
   $('mvBtn').textContent = same ? '請選擇不同的分類' : n ? '移動 ' + n + ' 張到「' + (dst ? dst.name : '') + '」' : '移動';
   $('mvBtn').disabled = !n || same || busy;
+  var del = $('delBtn');
+  if (!n || busy) disarmDelete();
+  del.textContent = delArmed ? '再按一次確認刪除 ' + n + ' 張' : n ? '🗑️ 刪除 ' + n + ' 張' : '🗑️ 刪除';
+  del.disabled = !n || busy;
 }
+// 刪除要按兩次:第一次「上膛」,5 秒內再按才真的刪
+var delArmed = false, delTimer = null;
+function disarmDelete(){ delArmed = false; clearTimeout(delTimer); $('delBtn').classList.remove('armed'); }
 $('mvFrom').addEventListener('change', function(){ mvSel = []; setStatus($('mvStatus'), ''); renderMoveGrid(); });
 $('mvTo').addEventListener('change', syncMoveUi);
+$('delBtn').addEventListener('click', async function(){
+  if (busy || !mvSel.length) return;
+  if (!delArmed) {
+    delArmed = true; this.classList.add('armed'); syncMoveUi();
+    delTimer = setTimeout(function(){ disarmDelete(); syncMoveUi(); }, 5000);
+    return;
+  }
+  disarmDelete();
+  var from = $('mvFrom').value, files = mvSel.slice().sort(), st = $('mvStatus');
+  busy = true; syncMoveUi(); setStatus(st, '刪除中…');
+  try {
+    var r = await withRetry(st, function(){ return commitDelete(from, files); });
+    mvSel = [];
+    await loadPhotos();
+    setStatus(st, '✅ 已從「' + r.src.name + '」刪除 ' + r.files.length + ' 張(' + r.files.map(numberOf).join('、') + ')。\n網站約 1 分鐘後更新。誤刪的話可以從 GitHub 歷史紀錄救回。', 'ok');
+  } catch (e) {
+    setStatus(st, e.status === 401 ? '權杖無效或已過期,請重新設定。' : '❌ 刪除失敗:' + e.message + '\n網站沒有任何變更。', 'err');
+  } finally {
+    busy = false; renderMoveGrid();
+  }
+});
 $('mvAll').addEventListener('click', function(){
   var cat = catOf($('mvFrom').value); if (!cat || busy) return;
   mvSel = mvSel.length === cat.files.length ? [] : cat.files.slice();
