@@ -139,8 +139,8 @@
       <p class="hint">移過去的照片會改成新分類接續的編號,不會覆蓋原有的照片。刪除要按兩次確認;刪掉的照片仍保留在 GitHub 的歷史紀錄中,誤刪可以救回。網站約 1 分鐘後更新;剛移動或剛上傳的照片,縮圖可能要等網站更新後才看得到。</p>
     </div>
     <div class="card" id="tabDup" hidden>
-      <p class="hint" style="margin-top:0">掃描所有分類,找出重複的照片。「完全相同」的會先幫你勾好多的那幾張;「看起來很像」的請自己確認(可能是故意做的不同版本)。</p>
-      <label class="check"><input type="checkbox" id="dupSimilar">也找看起來很像的照片(會下載所有縮圖比對,比較慢)</label>
+      <p class="hint" style="margin-top:0">掃描所有分類,找出重複的照片。「完全相同」「幾乎一樣」會先幫你勾好多的那幾張;「看起來很像」請自己確認(可能是鏡像、換色等故意做的不同版本)。</p>
+      <label class="check"><input type="checkbox" id="dupSimilar" checked>比對外觀:找出重新存檔、截圖或邊框不同的同一張圖(會下載所有縮圖,約需一分鐘)</label>
       <button class="primary" id="dupScan">🔍 開始掃描</button>
       <div class="status" id="dupStatus"></div>
       <div id="dupList"></div>
@@ -447,30 +447,79 @@ async function commitDeleteMany(items, label){
   await writeState(s, tree, label + ':' + items.length + ' 張(' + parts.join(';') + ')');
 }
 
-// 「看起來很像」用的縮圖指紋:16×16 灰階差異雜湊(256 bit)+ 平均顏色
+// ---------- 外觀比對 ----------
+// 拼豆圖紙有很細的格線,縮圖時會產生不同的紋路(手機和電腦做的縮圖也略有差異),
+// 所以先「把一塊塊區域平均」抹掉格線,再比對 16×16 色塊。另外裁掉四周空白邊再比一次,
+// 才不會因為邊框、標題、色號表範圍不同就認不出來。
+// 區域平均:把 (x0,y0)-(x1,y1) 範圍縮成 N×N(每格取範圍內的平均),ch = 每點幾個數值
+function boxAvg(src, w, ch, x0, y0, x1, y1, NW, NH){
+  var out = new Float32Array(NW * NH * ch), rw = x1 - x0, rh = y1 - y0;
+  for (var i = 0; i < NH; i++) {
+    var ya = y0 + Math.floor(i * rh / NH), yb = y0 + Math.max(Math.floor(i * rh / NH) + 1, Math.ceil((i + 1) * rh / NH));
+    for (var j = 0; j < NW; j++) {
+      var xa = x0 + Math.floor(j * rw / NW), xb = x0 + Math.max(Math.floor(j * rw / NW) + 1, Math.ceil((j + 1) * rw / NW));
+      var n = (yb - ya) * (xb - xa);
+      for (var c = 0; c < ch; c++) {
+        var sum = 0;
+        for (var y = ya; y < yb; y++) for (var x = xa; x < xb; x++) sum += src[(y * w + x) * ch + c];
+        out[(i * NW + j) * ch + c] = sum / n;
+      }
+    }
+  }
+  return out;
+}
+function median(arr){ var a = Array.prototype.slice.call(arr).sort(function(x, y){ return x - y; }), m = a.length >> 1; return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2; }
+// 找出圖紙內容的範圍(去掉四周顏色一致的空白邊)
+function contentBox(rgb, w, h){
+  var g = new Float32Array(w * h);
+  for (var i = 0; i < w * h; i++) g[i] = rgb[i * 3] * .299 + rgb[i * 3 + 1] * .587 + rgb[i * 3 + 2] * .114;
+  var sw = Math.floor(w / 3), sh = Math.floor(h / 3), sm = boxAvg(g, w, 1, 0, 0, w, h, sw, sh);
+  function busy(get, len, count){
+    var keep = [];
+    for (var k = 0; k < count; k++) {
+      var line = new Float32Array(len); for (var t = 0; t < len; t++) line[t] = get(k, t);
+      var md = median(line), n = 0; for (var t2 = 0; t2 < len; t2++) if (Math.abs(line[t2] - md) > 20) n++;
+      if (n / len > 0.03) keep.push(k);
+    }
+    return keep;
+  }
+  var rows = busy(function(r, t){ return sm[r * sw + t]; }, sw, sh), cols = busy(function(c, t){ return sm[t * sw + c]; }, sh, sw);
+  if (rows.length < 4 || cols.length < 4) return [0, 0, w, h];
+  return [cols[0] * 3, rows[0] * 3, (cols[cols.length - 1] + 1) * 3, (rows[rows.length - 1] + 1) * 3];
+}
 function thumbPrint(url){
   return new Promise(function(resolve){
     var im = new Image();
     im.onload = function(){
       try {
-        var c = document.createElement('canvas'); c.width = 17; c.height = 16;
-        var x = c.getContext('2d'); x.drawImage(im, 0, 0, 17, 16);
-        var d = x.getImageData(0, 0, 17, 16).data, bits = new Uint8Array(32), r = 0, g = 0, b = 0, k = 0;
-        for (var y = 0; y < 16; y++) for (var x2 = 0; x2 < 16; x2++) {
-          var i = (y * 17 + x2) * 4, j = i + 4;
-          var l1 = d[i] * .299 + d[i + 1] * .587 + d[i + 2] * .114, l2 = d[j] * .299 + d[j + 1] * .587 + d[j + 2] * .114;
-          if (l1 > l2) bits[k >> 3] |= 1 << (k & 7);
-          k++; r += d[i]; g += d[i + 1]; b += d[i + 2];
-        }
-        resolve({ bits: bits, rgb: [r / 256, g / 256, b / 256] });
+        var w = im.naturalWidth, h = im.naturalHeight, c = document.createElement('canvas'); c.width = w; c.height = h;
+        var x = c.getContext('2d'); x.drawImage(im, 0, 0);
+        var d = x.getImageData(0, 0, w, h).data, rgb = new Float32Array(w * h * 3);
+        for (var i = 0; i < w * h; i++) { rgb[i * 3] = d[i * 4]; rgb[i * 3 + 1] = d[i * 4 + 1]; rgb[i * 3 + 2] = d[i * 4 + 2]; }
+        var bx = contentBox(rgb, w, h);
+        var full = boxAvg(rgb, w, 3, 0, 0, w, h, 16, 16), trimmed = boxAvg(rgb, w, 3, bx[0], bx[1], bx[2], bx[3], 16, 16);
+        resolve({ ar: w / h, full: full, trimmed: trimmed, coarse: boxAvg(trimmed, 16, 3, 0, 0, 16, 16, 4, 4) });
       } catch (e) { resolve(null); }
     };
     im.onerror = function(){ resolve(null); };
     im.src = url;
   });
 }
-var POP = new Uint8Array(256); for (var pi = 1; pi < 256; pi++) POP[pi] = POP[pi >> 1] + (pi & 1);
-function hamming(a, b){ var n = 0; for (var i = 0; i < 32; i++) n += POP[a[i] ^ b[i]]; return n; }
+// 兩張的 16×16 色塊差異:平均值,以及最不像的那 5% 色塊(故意改過臉、顏色的版本這裡會很高)
+function blockDiff(a, b){
+  var diffs = new Float32Array(256), sum = 0;
+  for (var k = 0; k < 256; k++) {
+    var v = (Math.abs(a[k * 3] - b[k * 3]) + Math.abs(a[k * 3 + 1] - b[k * 3 + 1]) + Math.abs(a[k * 3 + 2] - b[k * 3 + 2])) / 3;
+    diffs[k] = v; sum += v;
+  }
+  var srt = Array.prototype.slice.call(diffs).sort(function(x, y){ return x - y; }), pos = 0.95 * 255, lo = Math.floor(pos);
+  return { mean: sum / 256, p95: srt[lo] + (srt[lo + 1] - srt[lo]) * (pos - lo) };
+}
+function compareTwo(a, b){
+  var t = blockDiff(a.trimmed, b.trimmed);
+  if (Math.abs(a.ar - b.ar) < 0.03) { var f = blockDiff(a.full, b.full); if (f.mean < t.mean) t = f; }
+  return t;
+}
 
 async function scanDuplicates(withSimilar, progress){
   var s = await readState(), tm = await repoTree(s.baseTree), items = [];
@@ -478,40 +527,51 @@ async function scanDuplicates(withSimilar, progress){
     var sha = tm['images/' + c.slug + '/' + f];
     if (sha) items.push({ slug: c.slug, file: f, sha: sha, ci: ci, other: !!c.emojiIcon, name: c.name });
   }); });
-  // union-find:同一個 sha(完全相同)或指紋很接近(看起來很像)的放同一組
-  var parent = items.map(function(_, i){ return i; });
-  function find(i){ while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
-  function union(a, b){ a = find(a); b = find(b); if (a !== b) parent[b] = a; }
+  // 兩種分組(union-find):strong = 完全相同或幾乎一樣(會預先勾選);weak = 看起來很像(不預先勾選)
+  function uf(n){ var p = []; for (var i = 0; i < n; i++) p.push(i);
+    return { find: function f(i){ while (p[i] !== i) { p[i] = p[p[i]]; i = p[i]; } return i; }, union: function(a, b){ a = this.find(a); b = this.find(b); if (a !== b) p[b] = a; } }; }
+  var strong = uf(items.length), weak = uf(items.length), nearPairs = {};
   var bySha = {};
-  items.forEach(function(it, i){ if (bySha[it.sha] === undefined) bySha[it.sha] = i; else union(bySha[it.sha], i); });
+  items.forEach(function(it, i){ if (bySha[it.sha] === undefined) bySha[it.sha] = i; else strong.union(bySha[it.sha], i); });
   if (withSimilar) {
     var prints = new Array(items.length), next = 0, done = 0;
     var worker = async function(){
       while (next < items.length) {
         var i = next++;
         prints[i] = await thumbPrint(thumbUrl(items[i].slug, items[i].file));
-        if (++done % 25 === 0) progress('比對縮圖 ' + done + ' / ' + items.length + '…');
+        if (++done % 25 === 0) progress('比對外觀 ' + done + ' / ' + items.length + '…');
       }
     };
     await Promise.all([worker(), worker(), worker(), worker(), worker(), worker()]);
+    progress('比對中…');
     for (var a = 0; a < items.length; a++) {
-      if (!prints[a]) continue;
-      for (var b = a + 1; b < items.length; b++) {
-        if (!prints[b] || items[a].sha === items[b].sha) continue;
-        var pa = prints[a], pb = prints[b];
-        if (Math.abs(pa.rgb[0] - pb.rgb[0]) + Math.abs(pa.rgb[1] - pb.rgb[1]) + Math.abs(pa.rgb[2] - pb.rgb[2]) > 36) continue;
-        if (hamming(pa.bits, pb.bits) <= 18) union(a, b);
+      var pa = prints[a]; if (!pa) continue;
+      for (var b2 = a + 1; b2 < items.length; b2++) {
+        var pb = prints[b2]; if (!pb || items[a].sha === items[b2].sha) continue;
+        var q = 0; for (var k = 0; k < 48; k++) q += Math.abs(pa.coarse[k] - pb.coarse[k]);
+        if (q / 48 > 16) continue;                               // 先用 4×4 粗略篩掉明顯不同的
+        var r = compareTwo(pa, pb);
+        if (r.mean <= 6 && r.p95 <= 10.5) { strong.union(a, b2); nearPairs[a + ',' + b2] = 1; }
+        else if (r.mean <= 9) weak.union(a, b2);
       }
     }
   }
-  var groups = {};
-  items.forEach(function(it, i){ var r = find(i); (groups[r] = groups[r] || []).push(it); });
-  return Object.keys(groups).map(function(k){ return groups[k]; }).filter(function(g){ return g.length > 1; }).map(function(g){
-    // 保留順序:放在正式分類的優先(「其他」排後面),再依分類順序與編號
-    g.sort(function(x, y){ return (x.other - y.other) || (x.ci - y.ci) || (x.file < y.file ? -1 : 1); });
-    var exact = g.every(function(it){ return it.sha === g[0].sha; });
-    return { exact: exact, items: g };
-  }).sort(function(x, y){ return (y.exact - x.exact) || (y.items.length - x.items.length); });
+  function collect(set, kindOf){
+    var g = {};
+    items.forEach(function(it, i){ var r = set.find(i); (g[r] = g[r] || []).push(i); });
+    return Object.keys(g).map(function(k){ return g[k]; }).filter(function(x){ return x.length > 1; }).map(function(idx){
+      var grp = idx.map(function(i){ return items[i]; });
+      grp.sort(function(x, y){ return (x.other - y.other) || (x.ci - y.ci) || (x.file < y.file ? -1 : 1); });   // 保留:正式分類、較前面的
+      return { kind: kindOf(grp), exact: kindOf(grp) === 'exact', items: grp, key: idx.slice().sort().join(',') };
+    });
+  }
+  var strongGroups = collect(strong, function(g){ return g.every(function(it){ return it.sha === g[0].sha; }) ? 'exact' : 'near'; });
+  // 「看起來很像」只列出還沒被歸在同一個 strong 組裡的
+  var weakGroups = collect(weak, function(){ return 'similar'; }).filter(function(g){
+    return g.items.some(function(it){ return strong.find(items.indexOf(it)) !== strong.find(items.indexOf(g.items[0])); });
+  });
+  var rank = { exact: 0, near: 1, similar: 2 };
+  return strongGroups.concat(weakGroups).sort(function(x, y){ return (rank[x.kind] - rank[y.kind]) || (y.items.length - x.items.length); });
 }
 
 // 新分類:編號接在最大的 cNN 後面,資料夾名稱去掉 Windows 不允許的字元(例如「/」)
@@ -738,7 +798,7 @@ function renderDups(){
   dupGroups.forEach(function(g){
     var wrap = document.createElement('div'); wrap.className = 'dup-group';
     var h = document.createElement('div'); h.className = 'dup-head';
-    h.textContent = g.exact ? '完全相同' : '看起來很像';
+    h.textContent = { exact: '完全相同', near: '幾乎一樣(重新存檔、截圖或邊框不同)', similar: '看起來很像(可能是故意做的不同版本)' }[g.kind];
     var sp = document.createElement('span'); sp.textContent = g.items.length + ' 張'; h.appendChild(sp);
     wrap.appendChild(h);
     var grid = document.createElement('div'); grid.className = 'grid dup-grid';
@@ -778,9 +838,9 @@ $('dupScan').addEventListener('click', async function(){
   var st = $('dupStatus'); setStatus(st, '掃描中…');
   try {
     dupGroups = await scanDuplicates($('dupSimilar').checked, function(m){ setStatus(st, m); });
-    dupGroups.forEach(function(g){ if (g.exact) g.items.slice(1).forEach(function(it){ dupDel[dupKey(it)] = it; }); });
-    var ex = dupGroups.filter(function(g){ return g.exact; }).length, si = dupGroups.length - ex;
-    setStatus(st, dupGroups.length ? '找到 ' + ex + ' 組完全相同' + ($('dupSimilar').checked ? '、' + si + ' 組看起來很像' : '') + '的照片。點照片可以切換保留 / 刪除。' : '✅ 沒有找到重複的照片。', dupGroups.length ? '' : 'ok');
+    dupGroups.forEach(function(g){ if (g.kind !== 'similar') g.items.slice(1).forEach(function(it){ dupDel[dupKey(it)] = it; }); });
+    var cnt = function(k){ return dupGroups.filter(function(g){ return g.kind === k; }).length; };
+    setStatus(st, dupGroups.length ? '找到 ' + cnt('exact') + ' 組完全相同' + ($('dupSimilar').checked ? '、' + cnt('near') + ' 組幾乎一樣、' + cnt('similar') + ' 組看起來很像' : '') + '。\n「完全相同」「幾乎一樣」已先勾好多的那幾張,點照片可以切換保留 / 刪除。' : '✅ 沒有找到重複的照片。', dupGroups.length ? '' : 'ok');
   } catch (e) {
     setStatus(st, e.status === 401 ? '權杖無效或已過期,請重新設定。' : '❌ 掃描失敗:' + e.message, 'err');
   } finally { busy = false; renderDups(); }
@@ -798,7 +858,7 @@ $('dupDel').addEventListener('click', async function(){
   try {
     await withRetry(st, function(){ return commitDeleteMany(items, '手機刪除重複照片'); });
     var gone = {}; items.forEach(function(it){ gone[dupKey(it)] = 1; });
-    dupGroups = dupGroups.map(function(g){ return { exact: g.exact, items: g.items.filter(function(it){ return !gone[dupKey(it)]; }) }; })
+    dupGroups = dupGroups.map(function(g){ return { kind: g.kind, exact: g.exact, items: g.items.filter(function(it){ return !gone[dupKey(it)]; }) }; })
       .filter(function(g){ return g.items.length > 1; });
     dupDel = {};
     await loadPhotos();
