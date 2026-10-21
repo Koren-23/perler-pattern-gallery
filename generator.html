@@ -148,8 +148,9 @@
           畫布尺寸請選和上面一樣的 <b id="pddSize">29 × 29</b>。</p>
         <button class="primary" id="pddBig" type="button">📲 傳到 PixDotDot</button>
         <button class="secondary" id="pddPx" type="button">改傳「1 顆 = 1 像素」的小圖</button>
-        <p class="hint">手機/平板會跳出分享選單:在上方 App 列找到 <b>PixDotDot</b> 點它,圖就直接進 App,不用先存照片。
-          沒看到就往右滑或按「更多」;如果都沒有,代表 App 不接受分享,請選「儲存影像」再從相簿匯入。<br>
+        <p class="hint">PixDotDot 不接受直接分享,請在分享選單選「儲存影像」,再到 App 從相簿匯入。<br>
+          想一次完成:用 iPhone/iPad 內建的「捷徑」App 做一個「傳到 PixDotDot」捷徑(儲存到相簿 → 打開 App),
+          之後在分享選單點它就會自動存好並打開 PixDotDot(做法見 README)。<br>
           第一種辨識不準時再試第二種。空白(去背)的格子會存成白色。</p>
         <div class="status" id="pddStatus"></div>
       </div>
@@ -691,7 +692,7 @@ function sendPdd(kind){
   if (!file) { st.textContent = '圖片準備中,請再按一次。'; return; }
   if (isMobile && navigator.canShare && navigator.canShare({ files: [file] })) {
     navigator.share({ files: [file] }).then(function(){
-      st.textContent = '✅ 已傳出。如果選的是「儲存影像」,請到 PixDotDot 從相簿匯入。';
+      st.textContent = '✅ 已傳出。請到 PixDotDot 從相簿匯入(最新一張)。';
     }).catch(function(e){ if (e && e.name !== 'AbortError') st.textContent = '分享失敗:' + e.message; });
   } else {
     var a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name;
