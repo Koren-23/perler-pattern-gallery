@@ -12,6 +12,7 @@
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -122,8 +123,27 @@ def main():
     data = json.loads(PHOTOS_JSON.read_text(encoding="utf-8"))
     by_slug = {c["slug"]: c for c in data}
 
+    # 在手機上改分類名稱後,git 會把照片搬到新資料夾,但舊的空資料夾留在電腦上。
+    # 沒有照片、而且編號(cNN)已經屬於某個現有分類的資料夾 = 改名留下的舊資料夾,直接移除,
+    # 不然下面會把它當成新分類。編號沒人用的空資料夾仍視為使用者新建的分類。
+    used_prefixes = {prefix_of(s) for s in by_slug}
+    for base in (IMAGES, THUMBS):
+        for folder in sorted(p for p in base.iterdir() if p.is_dir()):
+            if folder.name in by_slug or prefix_of(folder.name) not in used_prefixes:
+                continue
+            leftovers = [p for p in folder.rglob("*") if p.is_file()]
+            if base is IMAGES and any(p.suffix.lower() in IMAGE_EXTS for p in leftovers):
+                continue                                   # 裡面還有照片:不動,交給下面當新分類處理
+            log(f"移除改名後留下的舊資料夾 {folder.relative_to(ROOT)}"
+                + (f"(內含 {len(leftovers)} 個{'舊縮圖' if base is THUMBS else '非照片檔'})" if leftovers else ""))
+            if not dry:
+                shutil.rmtree(folder)
+
     # images/ 底下有新的分類資料夾(例如 c30_小熊) -> 加進清單,名稱取底線後的部分
     for folder in sorted(p for p in IMAGES.iterdir() if p.is_dir()):
+        if dry and folder.name not in by_slug and prefix_of(folder.name) in used_prefixes \
+                and not any(p.suffix.lower() in IMAGE_EXTS for p in folder.rglob("*") if p.is_file()):
+            continue                                       # dry-run:上面「會移除」的資料夾不要再當成新分類
         if folder.name not in by_slug:
             name = CATEGORY_PREFIX.sub("", folder.name) or folder.name
             cat = {"slug": folder.name, "name": name, "icon": "📁", "files": []}
