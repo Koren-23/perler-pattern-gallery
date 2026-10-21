@@ -69,6 +69,9 @@
   .chip b{display:block;}
   .chip span{color:var(--ink-soft);font-size:.75rem;}
   .status{font-size:.85rem;color:var(--ink-soft);margin-top:10px;}
+  .pdd{margin-top:16px;padding-top:14px;border-top:1px solid var(--border);}
+  .pdd h3{font-size:.95rem;margin:0 0 4px;}
+  .pdd .primary{margin-top:10px;}
 </style>
 </head>
 <body>
@@ -139,6 +142,15 @@
       <div class="scroll"><img id="out" alt="拼豆圖紙"></div>
       <p class="hint">每 10 格一條粗線。iPhone 長按圖紙可「儲存到照片」;雙指可放大。</p>
       <button class="secondary" id="dl">下載圖紙</button>
+      <div class="pdd">
+        <h3>📲 匯入 PIXDOTDOT 拼豆板</h3>
+        <p class="hint">產生一張乾淨的像素圖:每顆豆子一個純色方塊,沒有格線、色號和色表,App 辨識比較準。<br>
+          存到「照片」後,在 PIXDOTDOT App 從相簿匯入,畫布尺寸請選和上面一樣的 <b id="pddSize">29 × 29</b>。</p>
+        <button class="primary" id="pddBig" type="button">存成匯入用圖片</button>
+        <button class="secondary" id="pddPx" type="button">改存成「1 顆 = 1 像素」的小圖</button>
+        <p class="hint">第一種辨識不準時再試第二種。空白(去背)的格子會存成白色。</p>
+        <div class="status" id="pddStatus"></div>
+      </div>
     </div>
     <div class="card">
       <h2>顏色清單(依用量排序)</h2>
@@ -150,7 +162,7 @@
 <script>
 var $ = function(id){ return document.getElementById(id); };
 var img = null, ratio = 1, lastPng = null;
-var crop = null, cropping = false, note = '';   // note = 產生圖紙後要顯示的提醒   // crop = 照片上的裁切範圍(0–1 的比例);cropping = 正在調整裁切框
+var crop = null, cropping = false, note = '', lastPattern = null;   // note = 產生圖紙後要顯示的提醒   // crop = 照片上的裁切範圍(0–1 的比例);cropping = 正在調整裁切框
 
 // ---------- 顏色工具 ----------
 function srgbToLinear(c){ c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
@@ -578,8 +590,7 @@ function colorCount(){ var v = parseInt($('kn').value, 10); v = isNaN(v) ? 12 : 
 $('k').addEventListener('input', function(){ $('kn').value = this.value; });
 $('kn').addEventListener('change', function(){ colorCount(); generate(); });
 
-$('file').addEventListener('change', function(){
-  var f = this.files[0]; if (!f) return;
+function useImage(src){
   var im = new Image();
   im.onload = function(){
     img = im; ratio = im.naturalHeight / im.naturalWidth;
@@ -590,8 +601,20 @@ $('file').addEventListener('change', function(){
     generate();
   };
   im.onerror = function(){ $('status').textContent = '無法讀取這張照片,請換一張試試。'; };
-  im.src = URL.createObjectURL(f);
+  im.src = src;
+}
+$('file').addEventListener('change', function(){
+  var f = this.files[0]; if (f) useImage(URL.createObjectURL(f));
 });
+// 從圖庫按「轉成圖紙」過來:?src=images/分類/檔名(只接受本站 images/ 底下的圖)
+(function(){
+  var src = new URLSearchParams(location.search).get('src');
+  if (src && /^images\/[^\/]+\/[^\/]+\.jpg$/.test(src) && src.indexOf('..') < 0) {
+    $('status').textContent = '已載入圖庫裡的圖。建議先用「✂️ 裁切」框出格子範圍,寬高填成圖紙上的顆數。';
+    note = $('status').textContent;
+    useImage(src.split('/').map(encodeURIComponent).join('/'));
+  }
+})();
 
 function generate(){
   if (!img) return;
@@ -602,6 +625,8 @@ function generate(){
   setTimeout(function(){
     var q = quantize(sample(img, w, h), colorCount());
     var p = finalize(q);
+    lastPattern = { p: p, w: w, h: h };
+    $('pddSize').textContent = w + ' × ' + h;
     var canvas = draw(p, w, h, $('nums').checked);
     lastPng = canvas.toDataURL('image/png');
     $('out').src = lastPng;
@@ -630,6 +655,46 @@ $('reset').addEventListener('click', function(){
 });
 syncBgUi();
 $('k').addEventListener('change', generate);
+
+// 匯入 PIXDOTDOT 用:每顆一個純色方塊,不畫格線與文字;去背的空格存成白色
+function cleanCanvas(cell){
+  var p = lastPattern.p, w = lastPattern.w, h = lastPattern.h;
+  var c = document.createElement('canvas'); c.width = w * cell; c.height = h * cell;
+  var x = c.getContext('2d'); x.imageSmoothingEnabled = false;
+  x.fillStyle = '#ffffff'; x.fillRect(0, 0, c.width, c.height);
+  for (var cy = 0; cy < h; cy++) for (var cx = 0; cx < w; cx++) {
+    var v = p.grid[cy * w + cx]; if (v < 0) continue;
+    x.fillStyle = hex(p.colors[v].rgb); x.fillRect(cx * cell, cy * cell, cell, cell);
+  }
+  return c;
+}
+// iPhone:跳出分享選單,可直接「儲存影像」到照片;其他裝置:下載
+function saveCanvas(c, name){
+  var st = $('pddStatus');
+  c.toBlob(function(blob){
+    var file = new File([blob], name, { type: 'image/png' });
+    // 只有手機/平板用分享選單(可直接存到照片);電腦直接下載
+    var mobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    if (mobile && navigator.canShare && navigator.canShare({ files: [file] })) {
+      navigator.share({ files: [file], title: name }).then(function(){
+        st.textContent = '✅ 已送出。存到照片後,打開 PIXDOTDOT 從相簿匯入。';
+      }).catch(function(e){ if (e && e.name !== 'AbortError') st.textContent = '分享失敗:' + e.message; });
+    } else {
+      var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      st.textContent = '✅ 已下載 ' + name + '。傳到手機的「照片」後,在 PIXDOTDOT 從相簿匯入。';
+    }
+  }, 'image/png');
+}
+$('pddBig').addEventListener('click', function(){
+  if (!lastPattern) return;
+  var cell = Math.max(8, Math.min(40, Math.floor(1200 / Math.max(lastPattern.w, lastPattern.h))));
+  saveCanvas(cleanCanvas(cell), '拼豆_' + lastPattern.w + 'x' + lastPattern.h + '.png');
+});
+$('pddPx').addEventListener('click', function(){
+  if (!lastPattern) return;
+  saveCanvas(cleanCanvas(1), '拼豆_' + lastPattern.w + 'x' + lastPattern.h + '_1px.png');
+});
 
 $('dl').addEventListener('click', function(){
   if (!lastPng) return;

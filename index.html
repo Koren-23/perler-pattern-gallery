@@ -77,6 +77,7 @@
   <div class="viewer-bottom">
     <button id="viewerPrev">‹ 上一張</button>
     <button id="viewerNext">下一張 ›</button>
+    <button id="viewerGen">🎨 轉成圖紙</button>
   </div>
 </div>
 <div class="pw-mask" id="pwMask">
@@ -210,6 +211,11 @@ function updateViewer(){
 document.getElementById('viewerClose').addEventListener('click', closeViewer);
 document.getElementById('viewerPrev').addEventListener('click', function(){
   viewerIndex=(viewerIndex-1+state.images.length)%state.images.length; updateViewer();
+});
+// 把目前這張圖送到產生器(可再匯出給 PIXDOTDOT 拼豆板)
+document.getElementById('viewerGen').addEventListener('click', function(){
+  var img = state.images[viewerIndex]; if (!img) return;
+  location.href = 'generator.html?src=' + encodeURIComponent(img.f);
 });
 document.getElementById('viewerNext').addEventListener('click', function(){
   viewerIndex=(viewerIndex+1)%state.images.length; updateViewer();
