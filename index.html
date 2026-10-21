@@ -77,7 +77,8 @@
   <div class="viewer-bottom">
     <button id="viewerPrev">‹ 上一張</button>
     <button id="viewerNext">下一張 ›</button>
-    <button id="viewerGen">🎨 轉成圖紙</button>
+    <button id="viewerShare" hidden>📲 傳到 App</button>
+    <button id="viewerGen" hidden>🎨 轉成圖紙</button>
   </div>
 </div>
 <div class="pw-mask" id="pwMask">
@@ -207,10 +208,33 @@ function updateViewer(){
   $viewerImg.classList.remove('animate');
   $viewerImg.style.transform='';
   $viewerPos.textContent = (viewerIndex+1)+' / '+state.images.length;
+  if (typeof prefetchForShare === 'function') prefetchForShare();
 }
 document.getElementById('viewerClose').addEventListener('click', closeViewer);
 document.getElementById('viewerPrev').addEventListener('click', function(){
   viewerIndex=(viewerIndex-1+state.images.length)%state.images.length; updateViewer();
+});
+// 「傳到 App」「轉成圖紙」只給圖庫主人用(這支手機存過上傳權杖),
+// 一般訪客看不到,才不會從分享選單「儲存影像」繞過防下載
+var isOwner = false;
+try { isOwner = !!localStorage.getItem('ghToken'); } catch (e) {}
+var canShareFiles = !!(navigator.canShare && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1 && navigator.canShare));
+document.getElementById('viewerGen').hidden = !isOwner;
+document.getElementById('viewerShare').hidden = !(isOwner && canShareFiles);
+// 先把目前這張圖抓下來備著:iPhone 規定按下按鈕後要「馬上」叫出分享選單,不能等下載
+var shareCache = { url: null, file: null };
+function prefetchForShare(){
+  if (!isOwner || !canShareFiles) return;
+  var img = state.images[viewerIndex]; if (!img || shareCache.url === img.f) return;
+  var url = img.f; shareCache = { url: url, file: null };
+  fetch(url).then(function(r){ return r.blob(); }).then(function(b){
+    if (shareCache.url === url) shareCache.file = new File([b], url.split('/').pop(), { type: b.type || 'image/jpeg' });
+  }).catch(function(){});
+}
+document.getElementById('viewerShare').addEventListener('click', function(){
+  var f = shareCache.file;
+  if (!f) { this.textContent = '準備中…再按一次'; var btn = this; setTimeout(function(){ btn.textContent = '📲 傳到 App'; }, 1500); prefetchForShare(); return; }
+  if (navigator.canShare({ files: [f] })) navigator.share({ files: [f] }).catch(function(){});
 });
 // 把目前這張圖送到產生器(可再匯出給 PIXDOTDOT 拼豆板)
 document.getElementById('viewerGen').addEventListener('click', function(){

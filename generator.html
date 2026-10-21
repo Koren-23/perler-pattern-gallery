@@ -145,10 +145,12 @@
       <div class="pdd">
         <h3>📲 匯入 PIXDOTDOT 拼豆板</h3>
         <p class="hint">產生一張乾淨的像素圖:每顆豆子一個純色方塊,沒有格線、色號和色表,App 辨識比較準。<br>
-          存到「照片」後,在 PIXDOTDOT App 從相簿匯入,畫布尺寸請選和上面一樣的 <b id="pddSize">29 × 29</b>。</p>
-        <button class="primary" id="pddBig" type="button">存成匯入用圖片</button>
-        <button class="secondary" id="pddPx" type="button">改存成「1 顆 = 1 像素」的小圖</button>
-        <p class="hint">第一種辨識不準時再試第二種。空白(去背)的格子會存成白色。</p>
+          畫布尺寸請選和上面一樣的 <b id="pddSize">29 × 29</b>。</p>
+        <button class="primary" id="pddBig" type="button">📲 傳到 PixDotDot</button>
+        <button class="secondary" id="pddPx" type="button">改傳「1 顆 = 1 像素」的小圖</button>
+        <p class="hint">手機/平板會跳出分享選單:在上方 App 列找到 <b>PixDotDot</b> 點它,圖就直接進 App,不用先存照片。
+          沒看到就往右滑或按「更多」;如果都沒有,代表 App 不接受分享,請選「儲存影像」再從相簿匯入。<br>
+          第一種辨識不準時再試第二種。空白(去背)的格子會存成白色。</p>
         <div class="status" id="pddStatus"></div>
       </div>
     </div>
@@ -626,6 +628,7 @@ function generate(){
     var q = quantize(sample(img, w, h), colorCount());
     var p = finalize(q);
     lastPattern = { p: p, w: w, h: h };
+    preparePdd();
     $('pddSize').textContent = w + ' × ' + h;
     var canvas = draw(p, w, h, $('nums').checked);
     lastPng = canvas.toDataURL('image/png');
@@ -668,33 +671,36 @@ function cleanCanvas(cell){
   }
   return c;
 }
-// iPhone:跳出分享選單,可直接「儲存影像」到照片;其他裝置:下載
-function saveCanvas(c, name){
-  var st = $('pddStatus');
-  c.toBlob(function(blob){
-    var file = new File([blob], name, { type: 'image/png' });
-    // 只有手機/平板用分享選單(可直接存到照片);電腦直接下載
-    var mobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    if (mobile && navigator.canShare && navigator.canShare({ files: [file] })) {
-      navigator.share({ files: [file], title: name }).then(function(){
-        st.textContent = '✅ 已送出。存到照片後,打開 PIXDOTDOT 從相簿匯入。';
-      }).catch(function(e){ if (e && e.name !== 'AbortError') st.textContent = '分享失敗:' + e.message; });
-    } else {
-      var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
-      document.body.appendChild(a); a.click(); a.remove();
-      st.textContent = '✅ 已下載 ' + name + '。傳到手機的「照片」後,在 PIXDOTDOT 從相簿匯入。';
-    }
-  }, 'image/png');
+// 分享用的檔案在產生圖紙後就先做好:iPhone 規定按下按鈕後要「馬上」叫出分享選單
+var pddFiles = {};
+function bigCell(){ return Math.max(8, Math.min(40, Math.floor(1200 / Math.max(lastPattern.w, lastPattern.h)))); }
+function preparePdd(){
+  var stamp = pddFiles.stamp = {};
+  [['big', bigCell(), '.png'], ['px', 1, '_1px.png']].forEach(function(k){
+    var name = '拼豆_' + lastPattern.w + 'x' + lastPattern.h + k[2];
+    cleanCanvas(k[1]).toBlob(function(blob){
+      if (pddFiles.stamp === stamp) pddFiles[k[0]] = new File([blob], name, { type: 'image/png' });
+    }, 'image/png');
+  });
 }
-$('pddBig').addEventListener('click', function(){
+var isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+// 手機/平板:分享選單(可直接選 PixDotDot,或「儲存影像」);電腦:下載
+function sendPdd(kind){
+  var st = $('pddStatus'), file = pddFiles[kind];
   if (!lastPattern) return;
-  var cell = Math.max(8, Math.min(40, Math.floor(1200 / Math.max(lastPattern.w, lastPattern.h))));
-  saveCanvas(cleanCanvas(cell), '拼豆_' + lastPattern.w + 'x' + lastPattern.h + '.png');
-});
-$('pddPx').addEventListener('click', function(){
-  if (!lastPattern) return;
-  saveCanvas(cleanCanvas(1), '拼豆_' + lastPattern.w + 'x' + lastPattern.h + '_1px.png');
-});
+  if (!file) { st.textContent = '圖片準備中,請再按一次。'; return; }
+  if (isMobile && navigator.canShare && navigator.canShare({ files: [file] })) {
+    navigator.share({ files: [file] }).then(function(){
+      st.textContent = '✅ 已傳出。如果選的是「儲存影像」,請到 PixDotDot 從相簿匯入。';
+    }).catch(function(e){ if (e && e.name !== 'AbortError') st.textContent = '分享失敗:' + e.message; });
+  } else {
+    var a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name;
+    document.body.appendChild(a); a.click(); a.remove();
+    st.textContent = '✅ 已下載 ' + file.name + '。這台電腦不能直接傳到 App,請傳到手機的「照片」後在 PixDotDot 從相簿匯入。';
+  }
+}
+$('pddBig').addEventListener('click', function(){ sendPdd('big'); });
+$('pddPx').addEventListener('click', function(){ sendPdd('px'); });
 
 $('dl').addEventListener('click', function(){
   if (!lastPng) return;
