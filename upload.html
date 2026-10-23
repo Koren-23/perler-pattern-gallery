@@ -91,9 +91,16 @@
   .bd-item button{flex:0 0 auto;border:1px solid var(--border);background:var(--panel);border-radius:8px;padding:6px 10px;font-size:.8rem;font-weight:700;cursor:pointer;color:var(--ink);}
   .bd-item button.ok{border-color:var(--ok);color:var(--ok);}
   .bd-item button.del{color:var(--danger);border-color:var(--danger);}
-  .bd-done{margin-top:16px;}
-  .bd-done summary{font-size:.85rem;font-weight:700;cursor:pointer;color:var(--ink-soft);}
-  .bd-done .bd-item{opacity:.75;}
+  .bd-head.miss span:first-child{color:var(--danger);}
+  .bd-head.done{margin-top:22px;}
+  .bd-head.done span:first-child{color:var(--ok);}
+  .bd-check{flex:0 0 auto;width:30px;height:30px;border-radius:8px;border:2px solid #cfd4da;background:#eef0f2;color:#a3aab3;font-size:1rem;font-weight:900;line-height:26px;padding:0;text-align:center;cursor:pointer;}
+  .bd-check.on{background:var(--ok);border-color:var(--ok);color:#fff;}
+  .bd-check:disabled{opacity:.5;cursor:default;}
+  .bd-tag{flex:0 0 auto;font-size:.7rem;font-weight:700;border-radius:999px;padding:2px 8px;}
+  .bd-tag.miss{background:#fde8e8;color:var(--danger);}
+  .bd-tag.done{background:#e3f6ea;color:var(--ok);}
+  #bdDoneList .bd-code,#bdDoneList .bd-note{text-decoration:line-through;color:var(--ink-soft);}
   .empty{font-size:.85rem;color:var(--ink-soft);text-align:center;padding:24px 0;}
   .link{background:none;border:none;color:var(--ink-soft);padding:0;cursor:pointer;text-decoration:underline;font-size:.8rem;}
 </style>
@@ -163,12 +170,11 @@
       </div>
       <button class="primary" id="bdAdd" type="button">＋ 加入缺豆清單</button>
       <div class="status" id="bdStatus"></div>
-      <div class="bd-head"><span>🫘 缺豆清單</span><span id="bdCount"></span></div>
+      <div class="bd-head miss"><span>❗ 缺豆</span><span id="bdCount"></span></div>
       <div id="bdList"></div>
-      <details class="bd-done" id="bdDoneBox" hidden>
-        <summary id="bdDoneTitle">已補貨</summary>
-        <div id="bdDoneList"></div>
-      </details>
+      <div class="bd-head done" id="bdDoneHead" hidden><span>✅ 已補齊</span><span id="bdDoneCount"></span></div>
+      <div id="bdDoneList"></div>
+      <p class="hint">灰色 ✓ = 還沒補齊,點一下變綠色 = 已補齊;再點綠色 ✓ 就改回缺。</p>
       <p class="hint">清單存在 GitHub 的 beads.json,手機和平板看到的是同一份。已存在的色號再加一次會更新備註,不會重複。</p>
     </div>
     <div class="card" id="tabDup" hidden>
@@ -854,18 +860,25 @@ $('mvTo').addEventListener('change', syncMoveUi);
 
 // ---------- 缺豆 UI ----------
 var beads = null;
-function beadRow(it, buttons){
+function beadRow(it, done, buttons){
   var row = document.createElement('div'); row.className = 'bd-item';
+  // 灰色 ✓ = 還沒補齊;綠色 ✓ = 已補齊。點一下切換
+  var cb = document.createElement('button'); cb.type = 'button'; cb.className = 'bd-check' + (done ? ' on' : ''); cb.textContent = '✓';
+  cb.setAttribute('role', 'checkbox'); cb.setAttribute('aria-checked', done ? 'true' : 'false');
+  cb.setAttribute('aria-label', done ? '已補齊(點一下改回缺)' : '還沒補齊(點一下標記已補齊)');
+  cb.disabled = busy;
+  cb.addEventListener('click', function(){ if (!busy) beadAction(done ? 'again' : 'restock', it.code); });
   var code = document.createElement('div'); code.className = 'bd-code'; code.textContent = it.code;
   var main = document.createElement('div'); main.className = 'bd-main';
   if (it.note) { var n = document.createElement('div'); n.className = 'bd-note'; n.textContent = it.note; main.appendChild(n); }
   var d = document.createElement('div'); d.className = 'bd-date';
-  d.textContent = it.restocked ? '補貨 ' + it.restocked + '(缺豆 ' + it.added + ')' : '登記 ' + it.added;
+  d.textContent = done ? '補齊 ' + it.restocked + '(登記 ' + it.added + ')' : '登記 ' + it.added;
   main.appendChild(d);
-  row.appendChild(code); row.appendChild(main);
-  buttons.forEach(function(b){
-    var el = document.createElement('button'); el.type = 'button'; el.textContent = b[0]; if (b[1]) el.className = b[1];
-    el.addEventListener('click', function(){ if (!busy) b[2](); });
+  var tag = document.createElement('span'); tag.className = 'bd-tag ' + (done ? 'done' : 'miss'); tag.textContent = done ? '已補齊' : '缺';
+  row.appendChild(cb); row.appendChild(code); row.appendChild(main); row.appendChild(tag);
+  (buttons || []).forEach(function(bt){
+    var el = document.createElement('button'); el.type = 'button'; el.textContent = bt[0]; if (bt[1]) el.className = bt[1];
+    el.addEventListener('click', function(){ if (!busy) bt[2](); });
     row.appendChild(el);
   });
   return row;
@@ -874,16 +887,12 @@ function renderBeads(){
   var list = $('bdList'), done = $('bdDoneList');
   list.innerHTML = ''; done.innerHTML = '';
   if (!beads) { list.innerHTML = '<div class="empty">讀取中…</div>'; return; }
-  $('bdCount').textContent = beads.missing.length ? beads.missing.length + ' 色' : '';
+  $('bdCount').textContent = beads.missing.length + ' 色';
   if (!beads.missing.length) list.innerHTML = '<div class="empty">目前沒有缺的色號 🎉</div>';
-  beads.missing.forEach(function(it){
-    list.appendChild(beadRow(it, [['✓ 已補', 'ok', function(){ beadAction('restock', it.code); }]]));
-  });
-  $('bdDoneBox').hidden = !beads.restocked.length;
-  $('bdDoneTitle').textContent = '已補貨(' + beads.restocked.length + ')';
-  beads.restocked.forEach(function(it){
-    done.appendChild(beadRow(it, [['↩ 又缺了', '', function(){ beadAction('again', it.code); }], ['刪除', 'del', function(){ beadAction('delete', it.code); }]]));
-  });
+  beads.missing.forEach(function(it){ list.appendChild(beadRow(it, false)); });
+  $('bdDoneHead').hidden = !beads.restocked.length;
+  $('bdDoneCount').textContent = beads.restocked.length + ' 色';
+  beads.restocked.forEach(function(it){ done.appendChild(beadRow(it, true, [['刪除', 'del', function(){ beadAction('delete', it.code); }]])); });
 }
 async function loadBeads(){
   try { beads = (await readBeads()).data; }
@@ -892,7 +901,7 @@ async function loadBeads(){
 }
 async function beadAction(kind, code, note){
   var st = $('bdStatus');
-  busy = true; $('bdAdd').disabled = true; setStatus(st, '儲存中…');
+  busy = true; $('bdAdd').disabled = true; setStatus(st, '儲存中…'); renderBeads();
   try {
     var result = '';
     beads = await changeBeads(st, function(d){
@@ -906,14 +915,14 @@ async function beadAction(kind, code, note){
       }
       if (kind === 'restock' && inMissing >= 0) {
         var it = d.missing.splice(inMissing, 1)[0]; it.restocked = today(); d.restocked.unshift(it);
-        result = '「' + code + '」已標記補貨'; return '缺豆:' + code + ' 已補貨';
+        result = '「' + code + '」已補齊'; return '缺豆:' + code + ' 已補齊';
       }
       if (kind === 'again' && inDone >= 0) {
         var it2 = d.restocked.splice(inDone, 1)[0]; delete it2.restocked; it2.added = today(); d.missing.unshift(it2);
         result = '「' + code + '」重新加入缺豆清單'; return '缺豆:' + code + ' 又缺了';
       }
       if (kind === 'delete' && inDone >= 0) {
-        d.restocked.splice(inDone, 1); result = '已刪除「' + code + '」的紀錄'; return '缺豆:刪除 ' + code + ' 紀錄';
+        d.restocked.splice(inDone, 1); result = '已刪除「' + code + '」的補齊紀錄'; return '缺豆:刪除 ' + code + ' 紀錄';
       }
       result = '清單已在其他裝置變更,已重新整理'; return '';
     });
