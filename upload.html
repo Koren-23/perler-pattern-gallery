@@ -65,7 +65,7 @@
   .danger{width:100%;margin-top:8px;background:var(--panel);color:var(--danger);border:1px solid var(--danger);border-radius:10px;padding:10px;font-size:.92rem;font-weight:700;cursor:pointer;}
   .danger.armed{background:var(--danger);color:#fff;}
   .danger:disabled{opacity:.35;cursor:default;}
-  .tabs button{font-size:.85rem;padding:10px 6px;}
+  .tabs button{font-size:.82rem;padding:10px 4px;white-space:nowrap;}
   .check{display:flex;align-items:center;gap:8px;font-size:.85rem;margin:10px 0 0;}
   .check input{width:18px;height:18px;flex:0 0 auto;}
   .dup-group{margin-top:16px;}
@@ -78,6 +78,22 @@
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .dup-grid .mark{position:absolute;top:4px;right:4px;font-size:.65rem;font-weight:700;border-radius:6px;padding:1px 5px;background:var(--ok);color:#fff;}
   .dup-grid .cell.del .mark{background:var(--danger);}
+  .bd-add{display:grid;grid-template-columns:7.5em 1fr;gap:8px;}
+  .bd-add input{min-width:0;}
+  #bdCode{text-transform:uppercase;font-weight:700;}
+  .bd-head{display:flex;justify-content:space-between;align-items:center;margin:18px 0 8px;font-size:.9rem;font-weight:700;}
+  .bd-head span:last-child{font-weight:600;color:var(--ink-soft);font-size:.82rem;}
+  .bd-item{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--border);}
+  .bd-code{min-width:3.6em;font-size:1.05rem;font-weight:800;letter-spacing:.02em;}
+  .bd-main{flex:1;min-width:0;}
+  .bd-note{font-size:.85rem;overflow-wrap:anywhere;}
+  .bd-date{font-size:.72rem;color:var(--ink-soft);margin-top:2px;}
+  .bd-item button{flex:0 0 auto;border:1px solid var(--border);background:var(--panel);border-radius:8px;padding:6px 10px;font-size:.8rem;font-weight:700;cursor:pointer;color:var(--ink);}
+  .bd-item button.ok{border-color:var(--ok);color:var(--ok);}
+  .bd-item button.del{color:var(--danger);border-color:var(--danger);}
+  .bd-done{margin-top:16px;}
+  .bd-done summary{font-size:.85rem;font-weight:700;cursor:pointer;color:var(--ink-soft);}
+  .bd-done .bd-item{opacity:.75;}
   .empty{font-size:.85rem;color:var(--ink-soft);text-align:center;padding:24px 0;}
   .link{background:none;border:none;color:var(--ink-soft);padding:0;cursor:pointer;text-decoration:underline;font-size:.8rem;}
 </style>
@@ -96,9 +112,10 @@
 
   <section id="main" hidden>
     <div class="tabs" id="tabs">
-      <button type="button" data-tab="tabUpload" class="on">📤 上傳照片</button>
-      <button type="button" data-tab="tabMove">🗂️ 整理分類</button>
-      <button type="button" data-tab="tabDup">🔍 找重複</button>
+      <button type="button" data-tab="tabUpload" class="on">📤 上傳</button>
+      <button type="button" data-tab="tabMove">🗂️ 整理</button>
+      <button type="button" data-tab="tabDup">🔍 重複</button>
+      <button type="button" data-tab="tabBeads">🫘 缺豆</button>
     </div>
     <div class="card" id="tabUpload">
       <label class="field" for="cat">分類</label>
@@ -137,6 +154,22 @@
         <div class="status" id="mvStatus"></div>
       </div>
       <p class="hint">移過去的照片會改成新分類接續的編號,不會覆蓋原有的照片。刪除要按兩次確認;刪掉的照片仍保留在 GitHub 的歷史紀錄中,誤刪可以救回。網站約 1 分鐘後更新;剛移動或剛上傳的照片,縮圖可能要等網站更新後才看得到。</p>
+    </div>
+    <div class="card" id="tabBeads" hidden>
+      <label class="field" for="bdCode">缺的色號</label>
+      <div class="bd-add">
+        <input type="text" id="bdCode" placeholder="例如 H7" autocomplete="off" autocapitalize="characters" spellcheck="false">
+        <input type="text" id="bdNote" placeholder="備註(可留空,例如 2 包、做小新用)" autocomplete="off">
+      </div>
+      <button class="primary" id="bdAdd" type="button">＋ 加入缺豆清單</button>
+      <div class="status" id="bdStatus"></div>
+      <div class="bd-head"><span>🫘 缺豆清單</span><span id="bdCount"></span></div>
+      <div id="bdList"></div>
+      <details class="bd-done" id="bdDoneBox" hidden>
+        <summary id="bdDoneTitle">已補貨</summary>
+        <div id="bdDoneList"></div>
+      </details>
+      <p class="hint">清單存在 GitHub 的 beads.json,手機和平板看到的是同一份。已存在的色號再加一次會更新備註,不會重複。</p>
     </div>
     <div class="card" id="tabDup" hidden>
       <p class="hint" style="margin-top:0">掃描所有分類,找出重複的照片。「完全相同」「幾乎一樣」會先幫你勾好多的那幾張;「看起來很像」請自己確認(可能是鏡像、換色等故意做的不同版本)。</p>
@@ -574,6 +607,34 @@ async function scanDuplicates(withSimilar, progress){
   return strongGroups.concat(weakGroups).sort(function(x, y){ return (rank[x.kind] - rank[y.kind]) || (y.items.length - x.items.length); });
 }
 
+// ---------- 缺豆紀錄(beads.json)----------
+// 格式:{ "missing": [{code, note, added}], "restocked": [{code, note, added, restocked}] }
+var BEADS_PATH = 'beads.json';
+async function readBeads(){
+  var ref = await gh('/git/ref/heads/' + BRANCH), head = ref.object.sha, commit = await gh('/git/commits/' + head), data;
+  try { data = JSON.parse(b64ToText((await gh('/contents/' + BEADS_PATH + '?ref=' + head)).content)); }
+  catch (e) { if (e.status === 404) data = {}; else throw e; }   // 第一次使用還沒有這個檔案
+  data.missing = data.missing || []; data.restocked = data.restocked || [];
+  return { head: head, baseTree: commit.tree.sha, data: data };
+}
+async function writeBeads(st, data, message){
+  var tree = [{ path: BEADS_PATH, mode: '100644', type: 'blob', content: JSON.stringify(data, null, 1) + '\n' }];
+  var t = await gh('/git/trees', 'POST', { base_tree: st.baseTree, tree: tree });
+  var c = await gh('/git/commits', 'POST', { message: message, tree: t.sha, parents: [st.head] });
+  await gh('/git/refs/heads/' + BRANCH, 'PATCH', { sha: c.sha });
+}
+function normCode(c){ return String(c || '').trim().toUpperCase().replace(/\s+/g, ''); }
+function today(){ var d = new Date(); return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); }
+// fn 修改 data 並回傳 commit 訊息;讀最新內容 → 修改 → 存檔,衝突時重試
+async function changeBeads(statusEl, fn){
+  return withRetry(statusEl, async function(){
+    var st = await readBeads(), msg = fn(st.data);
+    if (!msg) return st.data;
+    await writeBeads(st, st.data, msg);
+    return st.data;
+  });
+}
+
 // 新分類:編號接在最大的 cNN 後面,資料夾名稱去掉 Windows 不允許的字元(例如「/」)
 var INVALID_CHARS = /[\\\/:*?"<>|]/g;
 async function commitNewCategory(name, icon){
@@ -728,6 +789,7 @@ Array.prototype.forEach.call(document.querySelectorAll('#tabs button'), function
       o.classList.toggle('on', o === b); $(o.dataset.tab).hidden = o !== b;
     });
     if (b.dataset.tab === 'tabMove') renderMoveGrid();
+    if (b.dataset.tab === 'tabBeads') { renderBeads(); loadBeads(); }
   });
 });
 
@@ -789,6 +851,87 @@ var delArmed = false, delTimer = null;
 function disarmDelete(){ delArmed = false; clearTimeout(delTimer); $('delBtn').classList.remove('armed'); }
 $('mvFrom').addEventListener('change', function(){ mvSel = []; setStatus($('mvStatus'), ''); renderMoveGrid(); });
 $('mvTo').addEventListener('change', syncMoveUi);
+
+// ---------- 缺豆 UI ----------
+var beads = null;
+function beadRow(it, buttons){
+  var row = document.createElement('div'); row.className = 'bd-item';
+  var code = document.createElement('div'); code.className = 'bd-code'; code.textContent = it.code;
+  var main = document.createElement('div'); main.className = 'bd-main';
+  if (it.note) { var n = document.createElement('div'); n.className = 'bd-note'; n.textContent = it.note; main.appendChild(n); }
+  var d = document.createElement('div'); d.className = 'bd-date';
+  d.textContent = it.restocked ? '補貨 ' + it.restocked + '(缺豆 ' + it.added + ')' : '登記 ' + it.added;
+  main.appendChild(d);
+  row.appendChild(code); row.appendChild(main);
+  buttons.forEach(function(b){
+    var el = document.createElement('button'); el.type = 'button'; el.textContent = b[0]; if (b[1]) el.className = b[1];
+    el.addEventListener('click', function(){ if (!busy) b[2](); });
+    row.appendChild(el);
+  });
+  return row;
+}
+function renderBeads(){
+  var list = $('bdList'), done = $('bdDoneList');
+  list.innerHTML = ''; done.innerHTML = '';
+  if (!beads) { list.innerHTML = '<div class="empty">讀取中…</div>'; return; }
+  $('bdCount').textContent = beads.missing.length ? beads.missing.length + ' 色' : '';
+  if (!beads.missing.length) list.innerHTML = '<div class="empty">目前沒有缺的色號 🎉</div>';
+  beads.missing.forEach(function(it){
+    list.appendChild(beadRow(it, [['✓ 已補', 'ok', function(){ beadAction('restock', it.code); }]]));
+  });
+  $('bdDoneBox').hidden = !beads.restocked.length;
+  $('bdDoneTitle').textContent = '已補貨(' + beads.restocked.length + ')';
+  beads.restocked.forEach(function(it){
+    done.appendChild(beadRow(it, [['↩ 又缺了', '', function(){ beadAction('again', it.code); }], ['刪除', 'del', function(){ beadAction('delete', it.code); }]]));
+  });
+}
+async function loadBeads(){
+  try { beads = (await readBeads()).data; }
+  catch (e) { setStatus($('bdStatus'), e.status === 401 ? '權杖無效或已過期,請重新設定。' : '❌ 讀取失敗:' + e.message, 'err'); }
+  renderBeads();
+}
+async function beadAction(kind, code, note){
+  var st = $('bdStatus');
+  busy = true; $('bdAdd').disabled = true; setStatus(st, '儲存中…');
+  try {
+    var result = '';
+    beads = await changeBeads(st, function(d){
+      var inMissing = d.missing.findIndex(function(x){ return x.code === code; }),
+          inDone = d.restocked.findIndex(function(x){ return x.code === code; });
+      if (kind === 'add') {
+        if (inMissing >= 0) { if (note) d.missing[inMissing].note = note; result = '「' + code + '」已在清單中' + (note ? ',已更新備註' : ''); return note ? '缺豆:更新 ' + code : ''; }
+        if (inDone >= 0) d.restocked.splice(inDone, 1);
+        d.missing.unshift({ code: code, note: note || '', added: today() });
+        result = '已加入「' + code + '」'; return '缺豆:新增 ' + code;
+      }
+      if (kind === 'restock' && inMissing >= 0) {
+        var it = d.missing.splice(inMissing, 1)[0]; it.restocked = today(); d.restocked.unshift(it);
+        result = '「' + code + '」已標記補貨'; return '缺豆:' + code + ' 已補貨';
+      }
+      if (kind === 'again' && inDone >= 0) {
+        var it2 = d.restocked.splice(inDone, 1)[0]; delete it2.restocked; it2.added = today(); d.missing.unshift(it2);
+        result = '「' + code + '」重新加入缺豆清單'; return '缺豆:' + code + ' 又缺了';
+      }
+      if (kind === 'delete' && inDone >= 0) {
+        d.restocked.splice(inDone, 1); result = '已刪除「' + code + '」的紀錄'; return '缺豆:刪除 ' + code + ' 紀錄';
+      }
+      result = '清單已在其他裝置變更,已重新整理'; return '';
+    });
+    setStatus(st, '✅ ' + result, 'ok');
+    return true;
+  } catch (e) {
+    setStatus(st, e.status === 401 ? '權杖無效或已過期,請重新設定。' : '❌ 儲存失敗:' + e.message, 'err');
+    return false;
+  } finally { busy = false; $('bdAdd').disabled = false; renderBeads(); }
+}
+$('bdAdd').addEventListener('click', function(){
+  var code = normCode($('bdCode').value), note = $('bdNote').value.trim();
+  if (!code) { setStatus($('bdStatus'), '請輸入色號', 'err'); $('bdCode').focus(); return; }
+  if (busy) return;
+  beadAction('add', code, note).then(function(ok){ if (!ok) return; $('bdCode').value = ''; $('bdNote').value = ''; $('bdCode').focus(); });
+});
+$('bdCode').addEventListener('keydown', function(e){ if (e.key === 'Enter') { e.preventDefault(); $('bdNote').focus(); } });
+$('bdNote').addEventListener('keydown', function(e){ if (e.key === 'Enter') { e.preventDefault(); $('bdAdd').click(); } });
 
 // ---------- 找重複 ----------
 var dupGroups = [], dupDel = {}, dupArmed = false, dupTimer = null;
