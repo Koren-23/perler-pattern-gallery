@@ -143,14 +143,12 @@
       <p class="hint">每 10 格一條粗線。iPhone 長按圖紙可「儲存到照片」;雙指可放大。</p>
       <button class="secondary" id="dl">下載圖紙</button>
       <div class="pdd">
-        <h3>📲 匯入 PIXDOTDOT 拼豆板</h3>
+        <h3>⬇️ 下載給 PixDotDot 拼豆板用的圖</h3>
         <p class="hint">產生一張乾淨的像素圖:每顆豆子一個純色方塊,沒有格線、色號和色表,App 辨識比較準。<br>
           畫布尺寸請選和上面一樣的 <b id="pddSize">29 × 29</b>。</p>
-        <button class="primary" id="pddBig" type="button">📲 傳到 PixDotDot</button>
-        <button class="secondary" id="pddPx" type="button">改傳「1 顆 = 1 像素」的小圖</button>
-        <p class="hint">PixDotDot 不接受直接分享,請在分享選單選「儲存影像」,再到 App 從相簿匯入。<br>
-          想一次完成:用 iPhone/iPad 內建的「捷徑」App 做一個「傳到 PixDotDot」捷徑(儲存到相簿 → 打開 App),
-          之後在分享選單點它就會自動存好並打開 PixDotDot(做法見 README)。<br>
+        <button class="primary" id="pddBig" type="button">⬇️ 下載圖片</button>
+        <button class="secondary" id="pddPx" type="button">下載「1 顆 = 1 像素」的小圖</button>
+        <p class="hint">手機/平板按下後會跳出選單,請點「<b>儲存影像</b>」存到照片,再打開 PixDotDot 從相簿匯入最新一張;電腦會直接下載檔案。<br>
           第一種辨識不準時再試第二種。空白(去背)的格子會存成白色。</p>
         <div class="status" id="pddStatus"></div>
       </div>
@@ -692,12 +690,12 @@ function sendPdd(kind){
   if (!file) { st.textContent = '圖片準備中,請再按一次。'; return; }
   if (isMobile && navigator.canShare && navigator.canShare({ files: [file] })) {
     navigator.share({ files: [file] }).then(function(){
-      st.textContent = '✅ 已傳出。請到 PixDotDot 從相簿匯入(最新一張)。';
+      st.textContent = '✅ 完成。請到 PixDotDot 從相簿匯入最新一張。';
     }).catch(function(e){ if (e && e.name !== 'AbortError') st.textContent = '分享失敗:' + e.message; });
   } else {
     var a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name;
     document.body.appendChild(a); a.click(); a.remove();
-    st.textContent = '✅ 已下載 ' + file.name + '。這台電腦不能直接傳到 App,請傳到手機的「照片」後在 PixDotDot 從相簿匯入。';
+    st.textContent = '✅ 已下載 ' + file.name + '。請傳到手機的「照片」後在 PixDotDot 從相簿匯入。';
   }
 }
 $('pddBig').addEventListener('click', function(){ sendPdd('big'); });
